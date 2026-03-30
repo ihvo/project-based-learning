@@ -118,6 +118,67 @@ func Decode(data []byte) (Value, error) {
 	return val, nil
 }
 
+// RawValue pairs a decoded Value with the original raw bytes it was decoded from.
+// Used when you need both the parsed structure and the original bytes (e.g., for hashing).
+type RawValue struct {
+	Val Value
+	Raw []byte
+}
+
+// DecodeRaw parses a bencoded byte slice and returns the value paired with its raw bytes.
+func DecodeRaw(data []byte) (RawValue, error) {
+	val, rest, err := decodeValue(data)
+	if err != nil {
+		return RawValue{}, err
+	}
+	rawLen := len(data) - len(rest)
+	return RawValue{Val: val, Raw: data[:rawLen]}, nil
+}
+
+// DecodeDictRaw decodes a bencoded dictionary and returns each value as a RawValue,
+// preserving the original bytes per entry. This is essential for computing the
+// info_hash, which requires the raw bencoded bytes of the "info" dict.
+func DecodeDictRaw(data []byte) (map[string]RawValue, error) {
+	if len(data) == 0 || data[0] != 'd' {
+		return nil, fmt.Errorf("%w: expected dict", ErrInvalidFormat)
+	}
+	data = data[1:] // skip 'd'
+
+	result := make(map[string]RawValue)
+	var prevKey string
+	first := true
+
+	for {
+		if len(data) == 0 {
+			return nil, fmt.Errorf("%w: missing 'e' in dict", ErrUnexpectedEnd)
+		}
+		if data[0] == 'e' {
+			return result, nil
+		}
+
+		key, rest, err := decodeString(data)
+		if err != nil {
+			return nil, fmt.Errorf("dict key: %w", err)
+		}
+		keyStr := string(key)
+
+		if !first && keyStr <= prevKey {
+			return nil, fmt.Errorf("%w: dict keys not sorted: %q after %q", ErrInvalidFormat, keyStr, prevKey)
+		}
+		prevKey = keyStr
+		first = false
+
+		val, rest2, err := decodeValue(rest)
+		if err != nil {
+			return nil, err
+		}
+
+		rawLen := len(rest) - len(rest2)
+		result[keyStr] = RawValue{Val: val, Raw: rest[:rawLen]}
+		data = rest2
+	}
+}
+
 // decodeValue parses one value from the front of data, returning the value
 // and the remaining unconsumed bytes. This "return the rest" pattern lets us
 // recursively parse nested structures without tracking an index.
