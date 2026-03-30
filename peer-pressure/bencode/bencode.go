@@ -168,10 +168,8 @@ func decodeString(data []byte) (String, []byte, error) {
 		return nil, nil, fmt.Errorf("%w: string length %d exceeds available data", ErrUnexpectedEnd, length)
 	}
 
-	// Copy the bytes so the returned value doesn't alias the input slice
-	s := make([]byte, length)
-	copy(s, data[start:end])
-	return String(s), data[end:], nil
+	// Zero-copy: return a slice into the original input buffer
+	return String(data[start:end]), data[end:], nil
 }
 
 // decodeInt parses: i<number>e
