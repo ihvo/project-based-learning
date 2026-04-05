@@ -111,22 +111,10 @@ func runPeers(args []string) {
 		fatal("parse torrent: %v", err)
 	}
 
-	resp, err := tracker.Announce(t.Announce, tracker.AnnounceParams{
-		InfoHash: t.InfoHash,
-		PeerID:   peerID,
-		Port:     uint16(*port),
-		Left:     int64(t.TotalLength()),
-	})
-	if err != nil {
-		fatal("tracker announce: %v", err)
-	}
-
-	fmt.Printf("Tracker: %s\n", t.Announce)
-	fmt.Printf("Interval: %ds\n", resp.Interval)
-	fmt.Printf("Seeders: %d  Leechers: %d\n", resp.Complete, resp.Incomplete)
-	fmt.Printf("Peers (%d):\n", len(resp.Peers))
-	for _, p := range resp.Peers {
-		fmt.Printf("  %s\n", p.Addr())
+	peers := announceAll(t, uint16(*port))
+	fmt.Printf("Total unique peers: %d\n", len(peers))
+	for _, addr := range peers {
+		fmt.Printf("  %s\n", addr)
 	}
 }
 
@@ -155,31 +143,14 @@ func runDownload(args []string) {
 		fatal("parse torrent: %v", err)
 	}
 
-	// Resolve output path
 	outPath := *output
 	if outPath == "" {
 		outPath = t.Name
 	}
 
-	// Announce to get peers
-	fmt.Printf("Announcing to %s...\n", t.Announce)
-	resp, err := tracker.Announce(t.Announce, tracker.AnnounceParams{
-		InfoHash: t.InfoHash,
-		PeerID:   peerID,
-		Port:     uint16(*port),
-		Left:     int64(t.TotalLength()),
-	})
-	if err != nil {
-		fatal("tracker announce: %v", err)
-	}
-
-	if len(resp.Peers) == 0 {
+	addrs := announceAll(t, uint16(*port))
+	if len(addrs) == 0 {
 		fatal("no peers found in swarm")
-	}
-
-	addrs := make([]string, len(resp.Peers))
-	for i, p := range resp.Peers {
-		addrs[i] = p.Addr()
 	}
 
 	fmt.Printf("Found %d peers, downloading %s (%d pieces)...\n",
@@ -198,6 +169,40 @@ func runDownload(args []string) {
 	}
 
 	fmt.Printf("\nDone! Saved to %s\n", outPath)
+}
+
+// announceAll queries every tracker in the torrent and merges peers.
+func announceAll(t *torrent.Torrent, port uint16) []string {
+	trackers := t.Trackers()
+
+	seen := make(map[string]bool)
+	var addrs []string
+
+	for _, trackerURL := range trackers {
+		fmt.Printf("Announcing to %s...\n", trackerURL)
+		resp, err := tracker.Announce(trackerURL, tracker.AnnounceParams{
+			InfoHash: t.InfoHash,
+			PeerID:   peerID,
+			Port:     port,
+			Left:     int64(t.TotalLength()),
+			Event:    "started",
+			NumWant:  200,
+		})
+		if err != nil {
+			fmt.Printf("  tracker error: %v\n", err)
+			continue
+		}
+		fmt.Printf("  got %d peers (seeders: %d, leechers: %d)\n",
+			len(resp.Peers), resp.Complete, resp.Incomplete)
+		for _, p := range resp.Peers {
+			addr := p.Addr()
+			if !seen[addr] {
+				seen[addr] = true
+				addrs = append(addrs, addr)
+			}
+		}
+	}
+	return addrs
 }
 
 func fatal(format string, args ...any) {

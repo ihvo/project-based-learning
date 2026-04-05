@@ -56,6 +56,8 @@ type AnnounceParams struct {
 	Uploaded   int64    // bytes uploaded so far
 	Downloaded int64    // bytes downloaded so far
 	Left       int64    // bytes remaining
+	Event      string   // "started", "completed", "stopped", or "" for regular
+	NumWant    int      // number of peers requested (0 = tracker default)
 }
 
 // Announce sends an HTTP announce request to the tracker and returns the response.
@@ -99,6 +101,13 @@ func buildAnnounceURL(trackerURL string, p AnnounceParams) (string, error) {
 	params.Set("downloaded", strconv.FormatInt(p.Downloaded, 10))
 	params.Set("left", strconv.FormatInt(p.Left, 10))
 	params.Set("compact", "1")
+
+	if p.Event != "" {
+		params.Set("event", p.Event)
+	}
+	if p.NumWant > 0 {
+		params.Set("numwant", strconv.Itoa(p.NumWant))
+	}
 
 	// Build the final URL with manually encoded binary fields
 	base.RawQuery = params.Encode() +

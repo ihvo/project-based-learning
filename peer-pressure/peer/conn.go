@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"net"
+	"time"
 )
 
 // Conn wraps a TCP connection to a BitTorrent peer, providing buffered
@@ -17,9 +18,10 @@ type Conn struct {
 }
 
 // Dial connects to a peer, performs the handshake, and returns a Conn.
-// Returns an error if the peer's info_hash doesn't match ours.
+// Uses a 5-second connection timeout. Returns an error if the peer's
+// info_hash doesn't match ours.
 func Dial(addr string, infoHash, peerID [20]byte) (*Conn, error) {
-	conn, err := net.Dial("tcp", addr)
+	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("connect to peer: %w", err)
 	}

@@ -24,13 +24,14 @@ const hashLen = 20 // SHA-1 produces 20-byte hashes
 
 // Torrent holds the parsed contents of a .torrent metainfo file.
 type Torrent struct {
-	Announce    string     // primary tracker URL
-	InfoHash    [hashLen]byte // SHA-1 of the raw bencoded info dict
-	Name        string     // suggested file/directory name
-	PieceLength int        // bytes per piece
-	Pieces      [][hashLen]byte // SHA-1 hash for each piece
-	Length      int        // total size in bytes (single-file mode)
-	Files       []File     // file list (multi-file mode; empty for single-file)
+	Announce     string        // primary tracker URL
+	AnnounceList [][]string    // multi-tracker tiers (BEP 12); nil if absent
+	InfoHash     [hashLen]byte // SHA-1 of the raw bencoded info dict
+	Name         string        // suggested file/directory name
+	PieceLength  int           // bytes per piece
+	Pieces       [][hashLen]byte // SHA-1 hash for each piece
+	Length       int           // total size in bytes (single-file mode)
+	Files        []File        // file list (multi-file mode; empty for single-file)
 }
 
 // File represents one file in a multi-file torrent.
@@ -42,6 +43,29 @@ type File struct {
 // IsSingleFile reports whether this torrent describes a single file.
 func (t *Torrent) IsSingleFile() bool {
 	return len(t.Files) == 0
+}
+
+// Trackers returns a flat, deduplicated list of all tracker URLs.
+// Includes announce-list tiers (if present) plus the primary announce URL.
+func (t *Torrent) Trackers() []string {
+	seen := make(map[string]bool)
+	var result []string
+	add := func(u string) {
+		if u != "" && !seen[u] {
+			seen[u] = true
+			result = append(result, u)
+		}
+	}
+
+	// Announce-list tiers first (BEP 12 says they take priority)
+	for _, tier := range t.AnnounceList {
+		for _, u := range tier {
+			add(u)
+		}
+	}
+	// Fall back to primary announce
+	add(t.Announce)
+	return result
 }
 
 // PieceLen returns the byte length of the piece at the given index.
@@ -160,6 +184,25 @@ func Parse(data []byte) (*Torrent, error) {
 		return nil, fmt.Errorf("torrent: 'announce' is not a string")
 	}
 	t.Announce = string(announce)
+
+	// --- announce-list (BEP 12, optional) ---
+	if alRaw, ok := entries["announce-list"]; ok {
+		if alList, ok := alRaw.Val.(bencode.List); ok {
+			for _, tier := range alList {
+				if tl, ok := tier.(bencode.List); ok {
+					var urls []string
+					for _, u := range tl {
+						if s, ok := u.(bencode.String); ok {
+							urls = append(urls, string(s))
+						}
+					}
+					if len(urls) > 0 {
+						t.AnnounceList = append(t.AnnounceList, urls)
+					}
+				}
+			}
+		}
+	}
 
 	// --- info dict ---
 	infoRaw, ok := entries["info"]

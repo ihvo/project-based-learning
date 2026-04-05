@@ -217,40 +217,35 @@ func (p *Progress) Render(width int) string {
 	if totalRows > maxRows {
 		// Each cell represents multiple pieces — show dominant state
 		totalCells := maxRows * mapWidth
+		row := make([]PieceState, 0, mapWidth)
 		for cell := range totalCells {
-			if cell%mapWidth == 0 {
-				b.WriteString("  ")
-			}
-
-			// Map cell to piece range
 			startPiece := cell * p.numPieces / totalCells
 			endPiece := (cell + 1) * p.numPieces / totalCells
 			if endPiece > p.numPieces {
 				endPiece = p.numPieces
 			}
-
-			// Find dominant state
 			var counts [4]int
 			for i := startPiece; i < endPiece; i++ {
 				counts[p.pieces[i]]++
 			}
-
-			// Priority: done > active > pending > empty
-			ch := pieceChar(dominantState(counts))
-			b.WriteString(ch)
+			row = append(row, dominantState(counts))
 
 			if (cell+1)%mapWidth == 0 {
+				b.WriteString("  ")
+				writePieceRow(&b, row)
 				b.WriteString("\n")
+				row = row[:0]
 			}
 		}
 	} else {
+		row := make([]PieceState, 0, mapWidth)
 		for i, s := range p.pieces {
-			if i%mapWidth == 0 {
-				b.WriteString("  ")
-			}
-			b.WriteString(pieceChar(s))
+			row = append(row, s)
 			if (i+1)%mapWidth == 0 || i == p.numPieces-1 {
+				b.WriteString("  ")
+				writePieceRow(&b, row)
 				b.WriteString("\n")
+				row = row[:0]
 			}
 		}
 	}
@@ -314,13 +309,56 @@ func (p *Progress) PrintOver(width int) {
 func pieceChar(s PieceState) string {
 	switch s {
 	case StateDone:
-		return "\033[32m█\033[0m"
+		return "█"
 	case StateActive:
-		return "\033[33m▓\033[0m"
+		return "▓"
 	case StatePending:
-		return "\033[90m░\033[0m"
+		return "░"
 	default:
-		return "\033[90m·\033[0m"
+		return "·"
+	}
+}
+
+// writePieceRow writes a row of piece characters, batching consecutive
+// same-state cells into single ANSI color runs to minimize escape codes.
+func writePieceRow(b *strings.Builder, row []PieceState) {
+	if len(row) == 0 {
+		return
+	}
+
+	cur := row[0]
+	count := 1
+	for i := 1; i < len(row); i++ {
+		if row[i] == cur {
+			count++
+			continue
+		}
+		writeStateRun(b, cur, count)
+		cur = row[i]
+		count = 1
+	}
+	writeStateRun(b, cur, count)
+	b.WriteString("\033[0m")
+}
+
+func writeStateRun(b *strings.Builder, s PieceState, n int) {
+	b.WriteString(stateColor(s))
+	ch := pieceChar(s)
+	for range n {
+		b.WriteString(ch)
+	}
+}
+
+func stateColor(s PieceState) string {
+	switch s {
+	case StateDone:
+		return "\033[32m"
+	case StateActive:
+		return "\033[33m"
+	case StatePending:
+		return "\033[90m"
+	default:
+		return "\033[90m"
 	}
 }
 
