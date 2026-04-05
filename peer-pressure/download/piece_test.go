@@ -13,6 +13,9 @@ import (
 // 2. Sends a bitfield
 // 3. Waits for interested, sends unchoke
 // 4. Responds to request messages with the correct block data
+//
+// All writes are serialized through a single goroutine to avoid
+// interleaving on unbuffered transports.
 func mockPeer(t *testing.T, conn net.Conn, infoHash [20]byte, pieceData []byte, pieceIndex int) {
 	t.Helper()
 
@@ -24,12 +27,22 @@ func mockPeer(t *testing.T, conn net.Conn, infoHash [20]byte, pieceData []byte, 
 	}
 	defer pc.Close()
 
-	// Send bitfield concurrently — avoids deadlock with net.Pipe when
-	// the client is also trying to write (interested) at the same time.
-	bfErr := make(chan error, 1)
+	// Serialize all writes through a channel to avoid interleaving
+	writeCh := make(chan *peer.Message, 16)
+	writesDone := make(chan struct{})
 	go func() {
-		bfErr <- pc.WriteMessage(peer.NewBitfield([]byte{0xFF}))
+		defer close(writesDone)
+		for msg := range writeCh {
+			pc.WriteMessage(msg)
+		}
 	}()
+	defer func() {
+		close(writeCh)
+		<-writesDone
+	}()
+
+	// Send bitfield — goes through the writer goroutine, so reads can proceed
+	writeCh <- peer.NewBitfield([]byte{0xFF})
 
 	// Wait for interested
 	for {
@@ -46,19 +59,10 @@ func mockPeer(t *testing.T, conn net.Conn, infoHash [20]byte, pieceData []byte, 
 		}
 	}
 
-	if err := <-bfErr; err != nil {
-		t.Errorf("mock peer send bitfield: %v", err)
-		return
-	}
-
 	// Send unchoke
-	if err := pc.WriteMessage(peer.NewUnchoke()); err != nil {
-		t.Errorf("mock peer send unchoke: %v", err)
-		return
-	}
+	writeCh <- peer.NewUnchoke()
 
-	// Respond to requests. Writes happen in a goroutine to avoid deadlocking
-	// with unbuffered pipes (the client is also writing requests concurrently).
+	// Respond to requests
 	for {
 		msg, err := pc.ReadMessage()
 		if err != nil {
@@ -88,9 +92,7 @@ func mockPeer(t *testing.T, conn net.Conn, infoHash [20]byte, pieceData []byte, 
 
 			block := make([]byte, end-begin)
 			copy(block, pieceData[begin:end])
-			go func() {
-				pc.WriteMessage(peer.NewPiece(rp.Index, rp.Begin, block))
-			}()
+			writeCh <- peer.NewPiece(rp.Index, rp.Begin, block)
 		}
 	}
 }

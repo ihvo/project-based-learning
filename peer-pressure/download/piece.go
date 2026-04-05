@@ -22,19 +22,22 @@ const BlockSize = 16384 // 16 KiB — standard block size per convention
 // the interested/unchoke negotiation, sends block requests, reassembles the
 // piece, and verifies its SHA-1 hash.
 func Piece(conn *peer.Conn, pieceIndex int, pieceLength int, expectedHash [20]byte) ([]byte, error) {
-	// Wait for bitfield (optional — peer may not send one)
-	// Then express interest and wait for unchoke
-	if err := negotiateUnchoke(conn); err != nil {
+	if _, err := NegotiateUnchoke(conn); err != nil {
 		return nil, fmt.Errorf("negotiate unchoke: %w", err)
 	}
+	return DownloadAndVerify(conn, pieceIndex, pieceLength, expectedHash)
+}
 
-	// Download all blocks
+// DownloadAndVerify downloads all blocks for a piece and verifies the SHA-1
+// hash. The connection must already be unchoked. Used by the session
+// orchestrator which negotiates unchoke once per peer, then downloads many
+// pieces.
+func DownloadAndVerify(conn *peer.Conn, pieceIndex, pieceLength int, expectedHash [20]byte) ([]byte, error) {
 	buf, err := downloadBlocks(conn, pieceIndex, pieceLength)
 	if err != nil {
 		return nil, fmt.Errorf("download blocks: %w", err)
 	}
 
-	// Verify SHA-1
 	actualHash := sha1.Sum(buf)
 	if actualHash != expectedHash {
 		return nil, fmt.Errorf("piece %d hash mismatch: got %x, want %x", pieceIndex, actualHash, expectedHash)
@@ -43,11 +46,12 @@ func Piece(conn *peer.Conn, pieceIndex int, pieceLength int, expectedHash [20]by
 	return buf, nil
 }
 
-// negotiateUnchoke sends interested and reads messages until we receive unchoke.
+// NegotiateUnchoke sends interested and reads messages until we receive unchoke.
 // Discards bitfield and have messages received during negotiation.
 // The write is done in a goroutine to avoid deadlocking on unbuffered
 // transports (like net.Pipe) where the peer may also be writing.
-func negotiateUnchoke(conn *peer.Conn) error {
+// Returns the bitfield if one was received, or nil.
+func NegotiateUnchoke(conn *peer.Conn) (bitfield []byte, err error) {
 	writeErr := make(chan error, 1)
 	go func() {
 		writeErr <- conn.WriteMessage(peer.NewInterested())
@@ -56,7 +60,7 @@ func negotiateUnchoke(conn *peer.Conn) error {
 	for {
 		msg, err := conn.ReadMessage()
 		if err != nil {
-			return fmt.Errorf("waiting for unchoke: %w", err)
+			return nil, fmt.Errorf("waiting for unchoke: %w", err)
 		}
 		if msg == nil {
 			continue // keep-alive
@@ -65,13 +69,15 @@ func negotiateUnchoke(conn *peer.Conn) error {
 		switch msg.ID {
 		case peer.MsgUnchoke:
 			if err := <-writeErr; err != nil {
-				return fmt.Errorf("send interested: %w", err)
+				return nil, fmt.Errorf("send interested: %w", err)
 			}
-			return nil
-		case peer.MsgBitfield, peer.MsgHave:
+			return bitfield, nil
+		case peer.MsgBitfield:
+			bitfield = msg.Payload
+		case peer.MsgHave:
 			continue // expected during negotiation
 		case peer.MsgChoke:
-			return fmt.Errorf("peer choked us")
+			return nil, fmt.Errorf("peer choked us")
 		default:
 			continue
 		}

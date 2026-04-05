@@ -41,6 +41,18 @@ func (t *Torrent) IsSingleFile() bool {
 	return len(t.Files) == 0
 }
 
+// PieceLen returns the byte length of the piece at the given index.
+// All pieces have length PieceLength except the last, which may be shorter.
+func (t *Torrent) PieceLen(index int) int {
+	start := index * t.PieceLength
+	end := start + t.PieceLength
+	total := t.TotalLength()
+	if end > total {
+		end = total
+	}
+	return end - start
+}
+
 // TotalLength returns the total size of all files in the torrent.
 func (t *Torrent) TotalLength() int {
 	if t.IsSingleFile() {
