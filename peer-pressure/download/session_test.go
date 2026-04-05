@@ -203,6 +203,7 @@ func TestFileDownload(t *testing.T) {
 		OutputPath: outPath,
 		PeerID:     clientID,
 		MaxPeers:   2,
+		Quiet:      true,
 	})
 	if err != nil {
 		t.Fatalf("File() error: %v", err)
@@ -271,6 +272,7 @@ func TestFileDownloadOverlappingPeers(t *testing.T) {
 		OutputPath: outPath,
 		PeerID:     clientID,
 		MaxPeers:   2,
+		Quiet:      true,
 	})
 	if err != nil {
 		t.Fatalf("File() error: %v", err)
@@ -339,6 +341,7 @@ func TestFileDownloadLastPieceShorter(t *testing.T) {
 		Peers:      []string{server.addr},
 		OutputPath: outPath,
 		PeerID:     clientID,
+		Quiet:      true,
 	})
 	if err != nil {
 		t.Fatalf("File() error: %v", err)

@@ -25,15 +25,19 @@ func Piece(conn *peer.Conn, pieceIndex int, pieceLength int, expectedHash [20]by
 	if _, err := NegotiateUnchoke(conn); err != nil {
 		return nil, fmt.Errorf("negotiate unchoke: %w", err)
 	}
-	return DownloadAndVerify(conn, pieceIndex, pieceLength, expectedHash)
+	return DownloadAndVerify(conn, pieceIndex, pieceLength, expectedHash, nil)
 }
+
+// BlockCallback is called each time a block is received during piece download.
+// Arguments: piece index, block begin offset, block length.
+type BlockCallback func(pieceIndex, blockBegin, blockLen int)
 
 // DownloadAndVerify downloads all blocks for a piece and verifies the SHA-1
 // hash. The connection must already be unchoked. Used by the session
 // orchestrator which negotiates unchoke once per peer, then downloads many
-// pieces.
-func DownloadAndVerify(conn *peer.Conn, pieceIndex, pieceLength int, expectedHash [20]byte) ([]byte, error) {
-	buf, err := downloadBlocks(conn, pieceIndex, pieceLength)
+// pieces. Pass nil for onBlock if block-level reporting is not needed.
+func DownloadAndVerify(conn *peer.Conn, pieceIndex, pieceLength int, expectedHash [20]byte, onBlock BlockCallback) ([]byte, error) {
+	buf, err := downloadBlocks(conn, pieceIndex, pieceLength, onBlock)
 	if err != nil {
 		return nil, fmt.Errorf("download blocks: %w", err)
 	}
@@ -88,7 +92,7 @@ func NegotiateUnchoke(conn *peer.Conn) (bitfield []byte, err error) {
 // Requests are sent from a goroutine so reads and writes happen concurrently —
 // this avoids deadlocks on unbuffered transports and naturally pipelines
 // requests on real TCP connections.
-func downloadBlocks(conn *peer.Conn, pieceIndex, pieceLength int) ([]byte, error) {
+func downloadBlocks(conn *peer.Conn, pieceIndex, pieceLength int, onBlock BlockCallback) ([]byte, error) {
 	buf := make([]byte, pieceLength)
 
 	numBlocks := pieceLength / BlockSize
@@ -141,6 +145,9 @@ func downloadBlocks(conn *peer.Conn, pieceIndex, pieceLength int) ([]byte, error
 			}
 			copy(buf[pp.Begin:], pp.Block)
 			received++
+			if onBlock != nil {
+				onBlock(pieceIndex, int(pp.Begin), len(pp.Block))
+			}
 
 		case peer.MsgChoke:
 			return nil, fmt.Errorf("peer choked us during download")

@@ -3,9 +3,9 @@ package download
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/ihvo/peer-pressure/peer"
 	"github.com/ihvo/peer-pressure/torrent"
@@ -18,13 +18,15 @@ type Config struct {
 	OutputPath string   // file path for single-file torrents
 	PeerID     [20]byte
 	MaxPeers   int // max concurrent peer connections (0 = unlimited)
+	Quiet      bool // suppress progress display
 }
 
 // pieceResult carries the outcome of one piece download back to the orchestrator.
 type pieceResult struct {
-	index int
-	data  []byte
-	err   error
+	index    int
+	data     []byte
+	fromAddr string
+	err      error
 }
 
 // File downloads all pieces of a torrent concurrently from multiple peers and
@@ -48,6 +50,12 @@ func File(ctx context.Context, cfg Config) error {
 	picker := NewPicker(numPieces)
 	results := make(chan pieceResult, numPieces)
 
+	// Progress tracker
+	var prog *Progress
+	if !cfg.Quiet {
+		prog = NewProgress(t.Name, numPieces, t.PieceLength, int64(t.TotalLength()))
+	}
+
 	// Limit concurrent peers
 	maxPeers := cfg.MaxPeers
 	if maxPeers <= 0 || maxPeers > len(cfg.Peers) {
@@ -64,7 +72,7 @@ func File(ctx context.Context, cfg Config) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			worker(ctx, addr, cfg.PeerID, t, picker, results)
+			worker(ctx, addr, cfg.PeerID, t, picker, results, prog)
 		}()
 	}
 
@@ -74,11 +82,32 @@ func File(ctx context.Context, cfg Config) error {
 		close(results)
 	}()
 
+	// Progress display ticker
+	var tickerDone chan struct{}
+	if prog != nil {
+		tickerDone = make(chan struct{})
+		go func() {
+			defer close(tickerDone)
+			tick := time.NewTicker(150 * time.Millisecond)
+			defer tick.Stop()
+			for {
+				select {
+				case <-tick.C:
+					prog.PrintOver(80)
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+	}
+
 	// Collect results and write pieces to disk
 	completed := 0
 	for result := range results {
 		if result.err != nil {
-			log.Printf("piece %d failed: %v", result.index, result.err)
+			if prog != nil {
+				prog.PieceFailed(result.index)
+			}
 			continue
 		}
 
@@ -87,12 +116,22 @@ func File(ctx context.Context, cfg Config) error {
 			return fmt.Errorf("write piece %d: %w", result.index, err)
 		}
 
-		completed++
-		log.Printf("piece %d/%d done", completed, numPieces)
+		if prog != nil {
+			prog.PieceDone(result.index, result.fromAddr)
+		}
 
+		completed++
 		if completed == numPieces {
 			break
 		}
+	}
+
+	// Final render
+	cancel()
+	if tickerDone != nil {
+		<-tickerDone
+		prog.PrintOver(80)
+		fmt.Println() // blank line after final render
 	}
 
 	if completed < numPieces {
@@ -104,10 +143,9 @@ func File(ctx context.Context, cfg Config) error {
 
 // worker runs the download loop for a single peer connection.
 // It connects, handshakes, negotiates unchoke, then loops: pick → download → report.
-func worker(ctx context.Context, addr string, peerID [20]byte, t *torrent.Torrent, picker *Picker, results chan<- pieceResult) {
+func worker(ctx context.Context, addr string, peerID [20]byte, t *torrent.Torrent, picker *Picker, results chan<- pieceResult, prog *Progress) {
 	conn, err := peer.Dial(addr, t.InfoHash, peerID)
 	if err != nil {
-		log.Printf("connect %s: %v", addr, err)
 		return
 	}
 	defer conn.Close()
@@ -115,12 +153,16 @@ func worker(ctx context.Context, addr string, peerID [20]byte, t *torrent.Torren
 	// Negotiate unchoke (also receives bitfield)
 	bitfield, err := NegotiateUnchoke(conn)
 	if err != nil {
-		log.Printf("unchoke %s: %v", addr, err)
 		return
 	}
 
 	picker.AddPeer(bitfield)
 	defer picker.RemovePeer(bitfield)
+
+	if prog != nil {
+		prog.PeerConnected(addr, bitfield)
+		defer prog.PeerDisconnected(addr)
+	}
 
 	for {
 		select {
@@ -134,15 +176,28 @@ func worker(ctx context.Context, addr string, peerID [20]byte, t *torrent.Torren
 			return // no more pieces this peer can provide
 		}
 
+		if prog != nil {
+			prog.PieceStarted(idx)
+		}
+
 		pieceLen := t.PieceLen(idx)
-		data, err := DownloadAndVerify(conn, idx, pieceLen, t.Pieces[idx])
+
+		// Block callback for progress tracking
+		var onBlock BlockCallback
+		if prog != nil {
+			onBlock = func(_, _, blockLen int) {
+				prog.BlockReceived(addr, blockLen)
+			}
+		}
+
+		data, err := DownloadAndVerify(conn, idx, pieceLen, t.Pieces[idx], onBlock)
 		if err != nil {
 			picker.Abort(idx)
 			results <- pieceResult{index: idx, err: fmt.Errorf("peer %s: %w", addr, err)}
-			return // assume connection is dead
+			return
 		}
 
 		picker.Finish(idx)
-		results <- pieceResult{index: idx, data: data}
+		results <- pieceResult{index: idx, data: data, fromAddr: addr}
 	}
 }
