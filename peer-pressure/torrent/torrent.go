@@ -11,8 +11,11 @@ package torrent
 import (
 	"crypto/sha1"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/ihvo/peer-pressure/bencode"
 )
@@ -98,6 +101,33 @@ func formatSize(bytes int) string {
 	default:
 		return fmt.Sprintf("%d B", bytes)
 	}
+}
+
+// Load parses a torrent from a file path or HTTP(S) URL.
+func Load(pathOrURL string) (*Torrent, error) {
+	if strings.HasPrefix(pathOrURL, "http://") || strings.HasPrefix(pathOrURL, "https://") {
+		return fetchAndParse(pathOrURL)
+	}
+	return ParseFile(pathOrURL)
+}
+
+func fetchAndParse(url string) (*Torrent, error) {
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("fetch torrent: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetch torrent: HTTP %d", resp.StatusCode)
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read torrent response: %w", err)
+	}
+	return Parse(data)
 }
 
 // ParseFile reads and parses a .torrent file from disk.

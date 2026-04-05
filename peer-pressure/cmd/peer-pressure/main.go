@@ -81,7 +81,7 @@ func runInfo(args []string) {
 		os.Exit(1)
 	}
 
-	t, err := torrent.ParseFile(fs.Arg(0))
+	t, err := torrent.Load(fs.Arg(0))
 	if err != nil {
 		fatal("parse torrent: %v", err)
 	}
@@ -106,7 +106,7 @@ func runPeers(args []string) {
 		os.Exit(1)
 	}
 
-	t, err := torrent.ParseFile(fs.Arg(0))
+	t, err := torrent.Load(fs.Arg(0))
 	if err != nil {
 		fatal("parse torrent: %v", err)
 	}
@@ -150,7 +150,7 @@ func runDownload(args []string) {
 		os.Exit(1)
 	}
 
-	t, err := torrent.ParseFile(fs.Arg(0))
+	t, err := torrent.Load(fs.Arg(0))
 	if err != nil {
 		fatal("parse torrent: %v", err)
 	}
