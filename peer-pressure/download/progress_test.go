@@ -38,7 +38,7 @@ func TestProgressRender(t *testing.T) {
 		"pending",
 		"192.168.1.5:6881",
 		"192.168.1.10:6882",
-		"Peers",
+		"Peer Pool",
 	}
 
 	for _, want := range checks {
@@ -47,9 +47,9 @@ func TestProgressRender(t *testing.T) {
 		}
 	}
 
-	// Verify peer stats
-	if !strings.Contains(output, "1 pcs") { // peer A has 1 completed piece
-		t.Error("expected peer A to show 1 completed piece")
+	// Verify peer stats — block count visible
+	if !strings.Contains(output, "2 blks") { // peer A received 2 blocks
+		t.Error("expected peer A to show 2 blks")
 	}
 }
 

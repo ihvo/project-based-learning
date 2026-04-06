@@ -2,6 +2,7 @@ package download
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -21,10 +22,19 @@ const (
 type PeerStats struct {
 	Addr      string
 	Bitfield  []byte
-	HasPieces int // how many pieces the peer's bitfield advertises
-	Pieces    int // completed pieces downloaded from this peer
-	Blocks    int // blocks received from this peer
+	HasPieces int       // how many pieces the peer's bitfield advertises
+	Pieces    int       // completed pieces downloaded from this peer
+	Blocks    int       // blocks received from this peer
 	Bytes     int64
+	Speed     float64   // bytes/sec (updated by pool evaluator)
+	Connected time.Time // when this peer connected
+}
+
+// PoolStats tracks the overall state of the peer pool.
+type PoolStats struct {
+	ActiveSlots  int // currently running workers
+	MaxSlots     int // max concurrent workers
+	UntriedPeers int // peers not yet tried
 }
 
 // Progress tracks download state for terminal visualization.
@@ -39,6 +49,7 @@ type Progress struct {
 
 	pieces []PieceState
 	peers  map[string]*PeerStats
+	pool   PoolStats
 
 	startTime  time.Time
 	bytesDown  int64
@@ -79,6 +90,7 @@ func (p *Progress) PeerConnected(addr string, bitfield []byte) {
 		Addr:      addr,
 		Bitfield:  bitfield,
 		HasPieces: has,
+		Connected: time.Now(),
 	}
 }
 
@@ -123,6 +135,22 @@ func (p *Progress) PieceFailed(index int) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.pieces[index] = StatePending
+}
+
+// UpdatePeerSpeed sets the measured speed for a peer.
+func (p *Progress) UpdatePeerSpeed(addr string, bytesPerSec float64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if ps, ok := p.peers[addr]; ok {
+		ps.Speed = bytesPerSec
+	}
+}
+
+// SetPoolStats updates the pool-level status shown in the display.
+func (p *Progress) SetPoolStats(stats PoolStats) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.pool = stats
 }
 
 // Render returns the full terminal display as a string.
@@ -251,25 +279,66 @@ func (p *Progress) Render(width int) string {
 	}
 	b.WriteString("\n")
 
-	// Peer table
-	b.WriteString("  \033[1mPeers\033[0m\n")
-	if len(p.peers) == 0 {
-		b.WriteString("  (no peers connected)\n")
+	// Peer pool table — sorted by speed descending
+	poolLabel := fmt.Sprintf("  \033[1mPeer Pool\033[0m  %d/%d slots", p.pool.ActiveSlots, p.pool.MaxSlots)
+	if p.pool.UntriedPeers > 0 {
+		poolLabel += fmt.Sprintf("  %d queued", p.pool.UntriedPeers)
 	}
-	for _, ps := range p.peers {
-		// Mini bitfield: compress to ~30 chars
-		miniWidth := 30
-		mini := renderMiniBitfield(ps.Bitfield, p.numPieces, miniWidth)
+	b.WriteString(poolLabel + "\n")
 
-		fmt.Fprintf(&b, "  %-22s %s  has %d/%d  ↓ %d pcs %d blks %s\n",
-			ps.Addr,
-			mini,
-			ps.HasPieces,
-			p.numPieces,
-			ps.Pieces,
-			ps.Blocks,
-			formatBytes(ps.Bytes),
-		)
+	if len(p.peers) == 0 {
+		b.WriteString("  \033[90m(no peers connected)\033[0m\n")
+	} else {
+		// Collect and sort by speed descending.
+		sorted := make([]*PeerStats, 0, len(p.peers))
+		for _, ps := range p.peers {
+			sorted = append(sorted, ps)
+		}
+		sort.Slice(sorted, func(i, j int) bool {
+			return sorted[i].Speed > sorted[j].Speed
+		})
+
+		// Find max speed for bar scaling.
+		maxSpeed := sorted[0].Speed
+		if maxSpeed < 1 {
+			maxSpeed = 1 // avoid division by zero
+		}
+
+		// Speed bar width (visual portion of line).
+		barCap := 16
+
+		for _, ps := range sorted {
+			// Speed bar: proportional to max speed
+			barFill := 0
+			if ps.Speed > 0 {
+				barFill = int(ps.Speed / maxSpeed * float64(barCap))
+				if barFill < 1 {
+					barFill = 1
+				}
+			}
+			barEmpty := barCap - barFill
+
+			// Color the bar: green for fast (top 50%), yellow for mid, red for slow
+			barColor := "\033[32m" // green
+			ratio := ps.Speed / maxSpeed
+			if ratio < 0.25 {
+				barColor = "\033[31m" // red
+			} else if ratio < 0.5 {
+				barColor = "\033[33m" // yellow
+			}
+
+			speedStr := formatSpeed(ps.Speed)
+
+			fmt.Fprintf(&b, "  %-21s %s%s\033[90m%s\033[0m %8s/s  %4d blks  %s\n",
+				ps.Addr,
+				barColor,
+				strings.Repeat("█", barFill),
+				strings.Repeat("░", barEmpty),
+				speedStr,
+				ps.Blocks,
+				formatBytes(ps.Bytes),
+			)
+		}
 	}
 
 	return b.String()
@@ -427,6 +496,19 @@ func formatBytes(b int64) string {
 		return fmt.Sprintf("%.1f KiB", float64(b)/float64(1<<10))
 	default:
 		return fmt.Sprintf("%d B", b)
+	}
+}
+
+func formatSpeed(bytesPerSec float64) string {
+	switch {
+	case bytesPerSec >= float64(1<<20):
+		return fmt.Sprintf("%.1f MiB", bytesPerSec/float64(1<<20))
+	case bytesPerSec >= float64(1<<10):
+		return fmt.Sprintf("%.1f KiB", bytesPerSec/float64(1<<10))
+	case bytesPerSec > 0:
+		return fmt.Sprintf("%.0f B", bytesPerSec)
+	default:
+		return "  0 B"
 	}
 }
 

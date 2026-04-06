@@ -118,6 +118,7 @@ func (p *peerPool) run(ctx context.Context, initialPeers []string) {
 	for _, addr := range initialPeers {
 		p.startWorker(ctx, addr)
 	}
+	p.pushPoolStats()
 
 	evalTicker := time.NewTicker(p.evalInterval)
 	defer evalTicker.Stop()
@@ -126,8 +127,10 @@ func (p *peerPool) run(ctx context.Context, initialPeers []string) {
 		select {
 		case addr := <-p.doneCh:
 			p.handleWorkerExit(ctx, addr)
+			p.pushPoolStats()
 		case <-evalTicker.C:
 			p.evaluate(ctx)
+			p.pushPoolStats()
 		case <-ctx.Done():
 			return
 		}
@@ -252,12 +255,17 @@ func (p *peerPool) evaluate(ctx context.Context) {
 	}
 	var eligible []ranked
 	for _, aw := range p.active {
+		spd := aw.speed(now)
 		if now.Sub(aw.started) < p.gracePeriod {
 			aw.snapshot(now) // update baseline but don't evaluate yet
-			continue
+		} else {
+			eligible = append(eligible, ranked{aw.addr, spd})
+			aw.snapshot(now)
 		}
-		eligible = append(eligible, ranked{aw.addr, aw.speed(now)})
-		aw.snapshot(now)
+		// Push every worker's speed to the progress display.
+		if p.prog != nil {
+			p.prog.UpdatePeerSpeed(aw.addr, spd)
+		}
 	}
 
 	// Need untried peers to rotate in — no point evicting without replacements.
@@ -313,4 +321,19 @@ func (p *peerPool) pickUntried() string {
 	addr := p.untried[0]
 	p.untried = p.untried[1:]
 	return addr
+}
+
+// pushPoolStats sends current slot/queue counts to the progress display.
+func (p *peerPool) pushPoolStats() {
+	if p.prog == nil {
+		return
+	}
+	p.mu.Lock()
+	stats := PoolStats{
+		ActiveSlots:  len(p.active),
+		MaxSlots:     p.maxSlots,
+		UntriedPeers: len(p.untried),
+	}
+	p.mu.Unlock()
+	p.prog.SetPoolStats(stats)
 }
