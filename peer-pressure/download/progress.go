@@ -373,6 +373,10 @@ func (p *Progress) PrintOver(width int) {
 
 	output := p.Render(width)
 
+	// Append "clear to end of line" before each newline so shorter lines
+	// erase leftover characters from previous (longer) renders.
+	output = strings.ReplaceAll(output, "\n", "\033[K\n")
+
 	// Count lines
 	newLines := strings.Count(output, "\n")
 
@@ -448,8 +452,9 @@ func stateColor(s PieceState) string {
 }
 
 func dominantState(counts [4]int) PieceState {
-	// Priority: done > active > pending > empty
-	if counts[StateDone] > 0 {
+	total := counts[StateDone] + counts[StateActive] + counts[StatePending] + counts[StateEmpty]
+	// Cell is done only when every piece in it is done.
+	if counts[StateDone] == total {
 		return StateDone
 	}
 	if counts[StateActive] > 0 {
