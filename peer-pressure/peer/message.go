@@ -35,6 +35,10 @@ const (
 	// because real-world seeders send these instead of a full bitfield.
 	MsgHaveAll  uint8 = 14
 	MsgHaveNone uint8 = 15
+
+	// BEP 10 — Extension Protocol. Extended messages carry a sub-ID
+	// in the first payload byte. Sub-ID 0 is the extension handshake.
+	MsgExtended uint8 = 20
 )
 
 // --- Handshake ---
@@ -43,14 +47,23 @@ const (
 type Handshake struct {
 	InfoHash [20]byte
 	PeerID   [20]byte
+	Reserved [8]byte // reserved bytes — bit 43 signals BEP 10 extension support
+}
+
+// SupportsExtensions returns true if the peer set bit 43 (BEP 10).
+func (h *Handshake) SupportsExtensions() bool {
+	return h.Reserved[5]&0x10 != 0
 }
 
 // WriteHandshake serializes and writes a handshake to w.
+// Sets reserved bit 43 to advertise BEP 10 extension protocol support.
 func WriteHandshake(w io.Writer, h *Handshake) error {
 	var buf [handshakeLen]byte
 	buf[0] = byte(len(protocolStr))
 	copy(buf[1:20], protocolStr)
-	// bytes 20-27: reserved (zeros)
+	// bytes 20-27: reserved — set bit 43 for BEP 10
+	copy(buf[20:28], h.Reserved[:])
+	buf[25] |= 0x10 // bit 43 = byte 5, bit 4
 	copy(buf[28:48], h.InfoHash[:])
 	copy(buf[48:68], h.PeerID[:])
 
@@ -75,6 +88,7 @@ func ReadHandshake(r io.Reader) (*Handshake, error) {
 	}
 
 	h := &Handshake{}
+	copy(h.Reserved[:], buf[20:28])
 	copy(h.InfoHash[:], buf[28:48])
 	copy(h.PeerID[:], buf[48:68])
 	return h, nil

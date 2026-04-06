@@ -19,6 +19,11 @@ type Conn struct {
 	// The peer's info from the handshake
 	PeerID   [20]byte
 	InfoHash [20]byte
+	Reserved [8]byte // peer's reserved bytes from handshake
+
+	// Extension protocol state (BEP 10).
+	// Populated after ExchangeExtHandshake().
+	PeerExtensions *ExtHandshake
 }
 
 // Dial connects to a peer, performs the handshake, and returns a Conn.
@@ -80,10 +85,11 @@ func doHandshake(conn net.Conn, infoHash, peerID [20]byte) (*Conn, error) {
 
 	return &Conn{
 		conn:     conn,
-		reader:   bufio.NewReaderSize(conn, 128*1024), // 128 KiB read buffer
-		writer:   bufio.NewWriterSize(conn, 128*1024), // 128 KiB write buffer
+		reader:   bufio.NewReaderSize(conn, 128*1024),
+		writer:   bufio.NewWriterSize(conn, 128*1024),
 		PeerID:   peerHS.PeerID,
 		InfoHash: peerHS.InfoHash,
+		Reserved: peerHS.Reserved,
 	}, nil
 }
 
@@ -119,4 +125,52 @@ func (c *Conn) Close() error {
 // RemoteAddr returns the peer's network address.
 func (c *Conn) RemoteAddr() net.Addr {
 	return c.conn.RemoteAddr()
+}
+
+// SupportsExtensions returns true if the peer advertised BEP 10 support.
+func (c *Conn) SupportsExtensions() bool {
+	return c.Reserved[5]&0x10 != 0
+}
+
+// ExchangeExtHandshake sends our extension handshake and reads the peer's.
+// Only call if SupportsExtensions() is true. Stores the result in PeerExtensions.
+func (c *Conn) ExchangeExtHandshake(exts map[string]int, metadataSize int) error {
+	// Write and read concurrently — net.Pipe (and similar unbuffered
+	// transports) deadlock if both sides flush before either reads.
+	writeErr := make(chan error, 1)
+	go func() {
+		err := c.WriteMessage(NewExtHandshake(exts, metadataSize))
+		if err == nil {
+			err = c.Flush()
+		}
+		writeErr <- err
+	}()
+
+	// Read messages until we get the extension handshake.
+	// The peer may send bitfield/have messages before it.
+	for {
+		c.SetDeadline(time.Now().Add(10 * time.Second))
+		msg, err := c.ReadMessage()
+		if err != nil {
+			return fmt.Errorf("read ext handshake: %w", err)
+		}
+		if msg == nil {
+			continue // keep-alive
+		}
+		if msg.ID != MsgExtended || len(msg.Payload) == 0 || msg.Payload[0] != 0 {
+			continue // not an extension handshake, skip
+		}
+
+		if err := <-writeErr; err != nil {
+			return fmt.Errorf("write ext handshake: %w", err)
+		}
+
+		ext, err := ParseExtHandshake(msg.Payload)
+		if err != nil {
+			return err
+		}
+		c.PeerExtensions = ext
+		c.SetDeadline(time.Time{})
+		return nil
+	}
 }
