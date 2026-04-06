@@ -15,6 +15,7 @@ type Config struct {
 	Torrent       *torrent.Torrent
 	Peers         []string // "host:port" addresses
 	WebSeeds      []string // HTTP seed URLs (BEP 19)
+	HTTPSeeds     []string // HTTP seed script URLs (BEP 17, Hoffman style)
 	OutputPath    string   // file path for single-file torrents
 	PeerID        [20]byte
 	MaxPeers      int // max concurrent peer connections (0 = unlimited)
@@ -95,6 +96,20 @@ func File(ctx context.Context, cfg Config) error {
 			defer wsWg.Done()
 			ws := newWebseedWorker(seedURL, t, picker, results, prog)
 			ws.run(ctx)
+		}(url)
+	}
+
+	// Start BEP 17 HTTP seed workers.
+	httpSeeds := cfg.HTTPSeeds
+	if len(httpSeeds) > maxWebSeeds {
+		httpSeeds = httpSeeds[:maxWebSeeds]
+	}
+	for _, url := range httpSeeds {
+		wsWg.Add(1)
+		go func(seedURL string) {
+			defer wsWg.Done()
+			hs := newHTTPSeedWorker(seedURL, t, picker, results, prog)
+			hs.run(ctx)
 		}(url)
 	}
 

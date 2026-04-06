@@ -311,6 +311,67 @@ func TestParseURLList(t *testing.T) {
 	})
 }
 
+// --- BEP 17: HTTP seeds (Hoffman style) ---
+
+func TestParseHTTPSeeds(t *testing.T) {
+	info := bencode.Dict{
+		"name":         bencode.String("test.bin"),
+		"piece length": bencode.Int(256),
+		"pieces":       fakePieces(1),
+		"length":       bencode.Int(256),
+	}
+
+	t.Run("list", func(t *testing.T) {
+		top := bencode.Dict{
+			"announce": bencode.String("http://tracker.example.com/announce"),
+			"info":     info,
+			"httpseeds": bencode.List{
+				bencode.String("http://www.example.com/seed.php"),
+				bencode.String("http://mirror.example.com/seed.php"),
+			},
+		}
+		tor, err := Parse(bencode.Encode(top))
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		if len(tor.HTTPSeeds) != 2 {
+			t.Fatalf("HTTPSeeds: got %d, want 2", len(tor.HTTPSeeds))
+		}
+		if tor.HTTPSeeds[0] != "http://www.example.com/seed.php" {
+			t.Errorf("HTTPSeeds[0] = %q", tor.HTTPSeeds[0])
+		}
+	})
+
+	t.Run("absent", func(t *testing.T) {
+		data := buildTorrent(t, info)
+		tor, err := Parse(data)
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		if len(tor.HTTPSeeds) != 0 {
+			t.Errorf("HTTPSeeds should be empty, got %v", tor.HTTPSeeds)
+		}
+	})
+
+	t.Run("empty strings filtered", func(t *testing.T) {
+		top := bencode.Dict{
+			"announce": bencode.String("http://tracker.example.com/announce"),
+			"info":     info,
+			"httpseeds": bencode.List{
+				bencode.String("http://seed.example.com/seed.php"),
+				bencode.String(""),
+			},
+		}
+		tor, err := Parse(bencode.Encode(top))
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		if len(tor.HTTPSeeds) != 1 {
+			t.Errorf("HTTPSeeds: got %d, want 1 (empty filtered)", len(tor.HTTPSeeds))
+		}
+	})
+}
+
 // --- BEP 27: Private torrents ---
 
 func TestPrivateFlag(t *testing.T) {

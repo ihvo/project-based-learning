@@ -262,6 +262,9 @@ func runDownload(args []string) {
 	if len(t.URLList) > 0 {
 		slog.Info("web seeds available", "count", len(t.URLList))
 	}
+	if len(t.HTTPSeeds) > 0 {
+		slog.Info("HTTP seeds available (BEP 17)", "count", len(t.HTTPSeeds))
+	}
 
 	slog.Info("starting download", "peers", len(addrs), "name", t.Name, "pieces", len(t.Pieces))
 
@@ -269,6 +272,7 @@ func runDownload(args []string) {
 		Torrent:    t,
 		Peers:      addrs,
 		WebSeeds:   t.URLList,
+		HTTPSeeds:  t.HTTPSeeds,
 		OutputPath: outPath,
 		PeerID:     peerID,
 		MaxPeers:   *maxPeers,

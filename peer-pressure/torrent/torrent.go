@@ -27,6 +27,7 @@ type Torrent struct {
 	Announce     string        // primary tracker URL
 	AnnounceList [][]string    // multi-tracker tiers (BEP 12); nil if absent
 	URLList      []string      // HTTP seed URLs (BEP 19); nil if absent
+	HTTPSeeds    []string      // HTTP seed URLs (BEP 17, Hoffman style); nil if absent
 	InfoHash     [hashLen]byte // SHA-1 of the raw bencoded info dict
 	Name         string        // suggested file/directory name
 	PieceLength  int           // bytes per piece
@@ -122,6 +123,12 @@ func (t *Torrent) String() string {
 	if len(t.URLList) > 0 {
 		fmt.Fprintf(&b, "Web Seeds:    %d\n", len(t.URLList))
 		for _, u := range t.URLList {
+			fmt.Fprintf(&b, "  %s\n", u)
+		}
+	}
+	if len(t.HTTPSeeds) > 0 {
+		fmt.Fprintf(&b, "HTTP Seeds:   %d (BEP 17)\n", len(t.HTTPSeeds))
+		for _, u := range t.HTTPSeeds {
 			fmt.Fprintf(&b, "  %s\n", u)
 		}
 	}
@@ -228,6 +235,19 @@ func Parse(data []byte) (*Torrent, error) {
 				if s, ok := item.(bencode.String); ok {
 					if u := string(s); u != "" {
 						t.URLList = append(t.URLList, u)
+					}
+				}
+			}
+		}
+	}
+
+	// --- httpseeds (BEP 17, Hoffman style, optional) ---
+	if hsRaw, ok := entries["httpseeds"]; ok {
+		if list, ok := hsRaw.Val.(bencode.List); ok {
+			for _, item := range list {
+				if s, ok := item.(bencode.String); ok {
+					if u := string(s); u != "" {
+						t.HTTPSeeds = append(t.HTTPSeeds, u)
 					}
 				}
 			}
