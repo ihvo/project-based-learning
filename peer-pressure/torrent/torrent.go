@@ -309,6 +309,36 @@ func parseInfo(t *Torrent, info bencode.Dict) error {
 // --- dict helper functions ---
 // These extract typed values from a bencode.Dict with clear error messages.
 
+// FromInfoDict builds a Torrent from raw bencoded info dictionary bytes.
+// Used when metadata is obtained via BEP 9 (magnet link metadata exchange).
+func FromInfoDict(rawInfo []byte, infoHash [20]byte, trackers []string) (*Torrent, error) {
+	val, err := bencode.Decode(rawInfo)
+	if err != nil {
+		return nil, fmt.Errorf("decode info dict: %w", err)
+	}
+	info, ok := val.(bencode.Dict)
+	if !ok {
+		return nil, fmt.Errorf("info dict is not a dict")
+	}
+
+	t := &Torrent{
+		InfoHash: infoHash,
+	}
+
+	// Set tracker URLs from magnet link hints.
+	if len(trackers) > 0 {
+		t.Announce = trackers[0]
+		if len(trackers) > 1 {
+			t.AnnounceList = [][]string{trackers}
+		}
+	}
+
+	if err := parseInfo(t, info); err != nil {
+		return nil, err
+	}
+	return t, nil
+}
+
 func dictString(d bencode.Dict, key string) (string, error) {
 	v, ok := d[key]
 	if !ok {

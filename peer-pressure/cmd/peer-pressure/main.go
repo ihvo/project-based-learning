@@ -6,8 +6,11 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/ihvo/peer-pressure/download"
+	"github.com/ihvo/peer-pressure/magnet"
+	"github.com/ihvo/peer-pressure/peer"
 	"github.com/ihvo/peer-pressure/torrent"
 	"github.com/ihvo/peer-pressure/tracker"
 )
@@ -127,8 +130,8 @@ func runDownload(args []string) {
 	maxPeers := fs.Int("peers", 30, "max concurrent peer connections")
 	quiet := fs.Bool("q", false, "suppress progress display")
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: peer-pressure download [options] <file.torrent>\n\n")
-		fmt.Fprintf(os.Stderr, "Download a torrent file.\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: peer-pressure download [options] <file.torrent | magnet:?...>\n\n")
+		fmt.Fprintf(os.Stderr, "Download a torrent file or magnet link.\n\n")
 		fs.PrintDefaults()
 	}
 	fs.Parse(args)
@@ -138,9 +141,24 @@ func runDownload(args []string) {
 		os.Exit(1)
 	}
 
-	t, err := torrent.Load(fs.Arg(0))
-	if err != nil {
-		fatal("parse torrent: %v", err)
+	arg := fs.Arg(0)
+
+	var t *torrent.Torrent
+	var addrs []string
+
+	if strings.HasPrefix(arg, "magnet:?") {
+		t, addrs = resolveMagnet(arg, uint16(*port))
+	} else {
+		var err error
+		t, err = torrent.Load(arg)
+		if err != nil {
+			fatal("parse torrent: %v", err)
+		}
+		addrs = announceAll(t, uint16(*port))
+	}
+
+	if len(addrs) == 0 {
+		fatal("no peers found in swarm")
 	}
 
 	outPath := *output
@@ -148,15 +166,10 @@ func runDownload(args []string) {
 		outPath = t.Name
 	}
 
-	addrs := announceAll(t, uint16(*port))
-	if len(addrs) == 0 {
-		fatal("no peers found in swarm")
-	}
-
 	fmt.Printf("Found %d peers, downloading %s (%d pieces)...\n",
 		len(addrs), t.Name, len(t.Pieces))
 
-	err = download.File(context.Background(), download.Config{
+	err := download.File(context.Background(), download.Config{
 		Torrent:    t,
 		Peers:      addrs,
 		OutputPath: outPath,
@@ -169,6 +182,124 @@ func runDownload(args []string) {
 	}
 
 	fmt.Printf("\nDone! Saved to %s\n", outPath)
+}
+
+// resolveMagnet parses a magnet URI, finds peers, fetches metadata, and
+// returns a fully populated Torrent and peer list.
+func resolveMagnet(uri string, port uint16) (*torrent.Torrent, []string) {
+	link, err := magnet.Parse(uri)
+	if err != nil {
+		fatal("parse magnet: %v", err)
+	}
+
+	fmt.Printf("Magnet: %s\n", link.Name)
+	fmt.Printf("Info hash: %x\n", link.InfoHash)
+
+	// Announce to trackers from the magnet link to find peers.
+	var addrs []string
+	if len(link.Trackers) > 0 {
+		addrs = announceAllTrackers(link.Trackers, link.InfoHash, port)
+	}
+	if len(addrs) == 0 {
+		fatal("no peers found (magnet had %d trackers)", len(link.Trackers))
+	}
+
+	// Fetch metadata from the first peer that supports ut_metadata.
+	fmt.Printf("Fetching metadata from peers...\n")
+	metadata := fetchMetadataFromPeers(addrs, link.InfoHash)
+	if metadata == nil {
+		fatal("could not fetch metadata from any peer")
+	}
+
+	// Parse the info dict into a Torrent.
+	t, err := torrent.FromInfoDict(metadata, link.InfoHash, link.Trackers)
+	if err != nil {
+		fatal("parse metadata: %v", err)
+	}
+
+	fmt.Printf("Got metadata: %s (%d pieces)\n", t.Name, len(t.Pieces))
+	return t, addrs
+}
+
+// fetchMetadataFromPeers tries each peer until one provides valid metadata.
+func fetchMetadataFromPeers(addrs []string, infoHash [20]byte) []byte {
+	for _, addr := range addrs {
+		conn, err := peer.Dial(addr, infoHash, peerID)
+		if err != nil {
+			continue
+		}
+
+		if !conn.SupportsExtensions() {
+			conn.Close()
+			continue
+		}
+
+		err = conn.ExchangeExtHandshake(
+			map[string]int{"ut_metadata": 1}, 0)
+		if err != nil {
+			conn.Close()
+			continue
+		}
+
+		if conn.PeerExtensions.M["ut_metadata"] == 0 {
+			conn.Close()
+			continue
+		}
+
+		data, err := magnet.FetchMetadata(conn, infoHash)
+		conn.Close()
+		if err != nil {
+			fmt.Printf("  metadata from %s: %v\n", addr, err)
+			continue
+		}
+
+		fmt.Printf("  got metadata from %s (%d bytes)\n", addr, len(data))
+		return data
+	}
+	return nil
+}
+
+// announceAllTrackers queries trackers using an info hash directly.
+func announceAllTrackers(trackers []string, infoHash [20]byte, port uint16) []string {
+	type result struct {
+		resp *tracker.Response
+		err  error
+	}
+	ch := make(chan result, len(trackers))
+
+	for _, trackerURL := range trackers {
+		go func(url string) {
+			fmt.Printf("Announcing to %s...\n", url)
+			resp, err := tracker.Announce(url, tracker.AnnounceParams{
+				InfoHash: infoHash,
+				PeerID:   peerID,
+				Port:     port,
+				Left:     0,
+				Event:    "started",
+				NumWant:  200,
+			})
+			ch <- result{resp, err}
+		}(trackerURL)
+	}
+
+	seen := make(map[string]bool)
+	var addrs []string
+	for range len(trackers) {
+		r := <-ch
+		if r.err != nil {
+			fmt.Printf("  tracker error: %v\n", r.err)
+			continue
+		}
+		fmt.Printf("  got %d peers\n", len(r.resp.Peers))
+		for _, p := range r.resp.Peers {
+			a := p.Addr()
+			if !seen[a] {
+				seen[a] = true
+				addrs = append(addrs, a)
+			}
+		}
+	}
+	return addrs
 }
 
 // announceAll queries every tracker in the torrent concurrently and merges peers.

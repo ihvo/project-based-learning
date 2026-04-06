@@ -209,3 +209,48 @@ func searchString(s, sub string) bool {
 	}
 	return false
 }
+
+func TestFromInfoDict(t *testing.T) {
+	// Build a minimal info dict.
+	pieces := make([]byte, 20) // one piece hash (all zeros)
+	info := bencode.Dict{
+		"name":         bencode.String("testfile.txt"),
+		"piece length": bencode.Int(262144),
+		"pieces":       bencode.String(pieces),
+		"length":       bencode.Int(100000),
+	}
+	rawInfo := bencode.Encode(info)
+	infoHash := sha1.Sum(rawInfo)
+
+	trackers := []string{
+		"udp://tracker.opentrackr.org:1337/announce",
+		"udp://tracker.openbittorrent.com:6969/announce",
+	}
+
+	tor, err := FromInfoDict(rawInfo, infoHash, trackers)
+	if err != nil {
+		t.Fatalf("FromInfoDict: %v", err)
+	}
+
+	if tor.Name != "testfile.txt" {
+		t.Errorf("Name: got %q, want %q", tor.Name, "testfile.txt")
+	}
+	if tor.PieceLength != 262144 {
+		t.Errorf("PieceLength: got %d, want %d", tor.PieceLength, 262144)
+	}
+	if len(tor.Pieces) != 1 {
+		t.Errorf("Pieces: got %d, want 1", len(tor.Pieces))
+	}
+	if tor.Length != 100000 {
+		t.Errorf("Length: got %d, want %d", tor.Length, 100000)
+	}
+	if tor.InfoHash != infoHash {
+		t.Errorf("InfoHash mismatch")
+	}
+	if tor.Announce != trackers[0] {
+		t.Errorf("Announce: got %q, want %q", tor.Announce, trackers[0])
+	}
+	if len(tor.AnnounceList) != 1 || len(tor.AnnounceList[0]) != 2 {
+		t.Errorf("AnnounceList: got %v, want [[%v]]", tor.AnnounceList, trackers)
+	}
+}
