@@ -308,31 +308,36 @@ func TestUDPTrackerErrorResponse(t *testing.T) {
 	}
 }
 
-func TestUDPHostFromURL(t *testing.T) {
+func TestUDPParseURL(t *testing.T) {
 	tests := []struct {
-		url  string
-		want string
-		err  bool
+		url       string
+		wantHost  string
+		wantPQ    string
+		err       bool
 	}{
-		{"udp://tracker.example.com:6969/announce", "tracker.example.com:6969", false},
-		{"udp://10.0.0.1:1337", "10.0.0.1:1337", false},
-		{"http://example.com:80", "", true}, // wrong scheme
+		{"udp://tracker.example.com:6969/announce", "tracker.example.com:6969", "/announce", false},
+		{"udp://10.0.0.1:1337", "10.0.0.1:1337", "", false},
+		{"udp://tracker.example.com:80/dir?a=b&c=d", "tracker.example.com:80", "/dir?a=b&c=d", false},
+		{"http://example.com:80", "", "", true}, // wrong scheme
 	}
 
 	for _, tt := range tests {
-		got, err := udpHostFromURL(tt.url)
+		host, pq, err := udpParseURL(tt.url)
 		if tt.err {
 			if err == nil {
-				t.Errorf("udpHostFromURL(%q): expected error", tt.url)
+				t.Errorf("udpParseURL(%q): expected error", tt.url)
 			}
 			continue
 		}
 		if err != nil {
-			t.Errorf("udpHostFromURL(%q): %v", tt.url, err)
+			t.Errorf("udpParseURL(%q): %v", tt.url, err)
 			continue
 		}
-		if got != tt.want {
-			t.Errorf("udpHostFromURL(%q) = %q, want %q", tt.url, got, tt.want)
+		if host != tt.wantHost {
+			t.Errorf("udpParseURL(%q) host = %q, want %q", tt.url, host, tt.wantHost)
+		}
+		if pq != tt.wantPQ {
+			t.Errorf("udpParseURL(%q) pathQuery = %q, want %q", tt.url, pq, tt.wantPQ)
 		}
 	}
 }
@@ -396,4 +401,86 @@ func TestSchemeDispatch(t *testing.T) {
 	if len(resp.Peers) != 1 || resp.Peers[0].Port != 9999 {
 		t.Errorf("UDP peers: %+v", resp.Peers)
 	}
+}
+
+// --- BEP 41: UDP Tracker Protocol Extensions ---
+
+func TestEncodeURLDataOption(t *testing.T) {
+	tests := []struct {
+		name      string
+		pathQuery string
+		wantBytes []byte
+	}{
+		{
+			name:      "empty",
+			pathQuery: "",
+			wantBytes: []byte{0x02, 0x00},
+		},
+		{
+			name:      "short_path",
+			pathQuery: "/dir?a=b&c=d",
+			wantBytes: append([]byte{0x02, 12}, []byte("/dir?a=b&c=d")...),
+		},
+		{
+			name:      "announce",
+			pathQuery: "/announce",
+			wantBytes: append([]byte{0x02, 9}, []byte("/announce")...),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := encodeURLDataOption(tt.pathQuery)
+			if len(got) != len(tt.wantBytes) {
+				t.Fatalf("len = %d, want %d", len(got), len(tt.wantBytes))
+			}
+			for i := range got {
+				if got[i] != tt.wantBytes[i] {
+					t.Errorf("byte[%d] = 0x%02x, want 0x%02x", i, got[i], tt.wantBytes[i])
+				}
+			}
+		})
+	}
+}
+
+func TestEncodeURLDataOptionLong(t *testing.T) {
+	// Path longer than 255 bytes gets chunked.
+	longPath := "/" + string(make([]byte, 300))
+	for i := range longPath[1:] {
+		longPath = longPath[:i+1] + "x" + longPath[i+2:]
+	}
+	longPath = "/" + repeatByte('x', 300)
+
+	opts := encodeURLDataOption(longPath)
+
+	// Should have at least 2 URLData chunks.
+	if len(opts) < 4 {
+		t.Fatalf("options too short: %d bytes", len(opts))
+	}
+
+	// Parse the options back.
+	var assembled []byte
+	i := 0
+	for i < len(opts) {
+		if opts[i] != optURLData {
+			t.Fatalf("expected URLData option at offset %d, got 0x%02x", i, opts[i])
+		}
+		i++
+		length := int(opts[i])
+		i++
+		assembled = append(assembled, opts[i:i+length]...)
+		i += length
+	}
+
+	if string(assembled) != longPath {
+		t.Errorf("reassembled path length = %d, want %d", len(assembled), len(longPath))
+	}
+}
+
+func repeatByte(b byte, n int) string {
+	buf := make([]byte, n)
+	for i := range buf {
+		buf[i] = b
+	}
+	return string(buf)
 }

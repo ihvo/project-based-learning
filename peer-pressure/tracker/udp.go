@@ -35,12 +35,17 @@ const (
 	// (15 × 2^n) reaches 1920s at n=7 — far too long for interactive use.
 	maxTimeout = 60 * time.Second
 	maxRetries = 4 // 15s, 30s, 60s, 60s — then give up
+
+	// BEP 41: UDP tracker extension option types.
+	optEndOfOptions byte = 0x00
+	optNOP          byte = 0x01
+	optURLData      byte = 0x02
 )
 
 // announceUDP performs a full UDP tracker announce: connect then announce.
-// The URL must be udp://host:port/announce (path is ignored).
+// The URL must be udp://host:port[/path][?query].
 func announceUDP(rawURL string, params AnnounceParams) (*Response, error) {
-	host, err := udpHostFromURL(rawURL)
+	host, pathQuery, err := udpParseURL(rawURL)
 	if err != nil {
 		return nil, err
 	}
@@ -66,7 +71,7 @@ func announceUDP(rawURL string, params AnnounceParams) (*Response, error) {
 	}
 
 	// Step 2: announce — send our stats, get peers back.
-	resp, err := udpAnnounce(conn, connID, params)
+	resp, err := udpAnnounce(conn, connID, params, pathQuery)
 	if err != nil {
 		return nil, fmt.Errorf("udp announce: %w", err)
 	}
@@ -108,14 +113,15 @@ func udpConnect(conn *net.UDPConn) (uint64, error) {
 }
 
 // udpAnnounce sends an announce request and parses the peer list.
+// pathQuery is the BEP 41 URLData payload (path+query from the tracker URL).
 //
-//	Request:  98 bytes (connection_id + action + txn + info_hash + peer_id + stats + port)
+//	Request:  98 bytes base + optional BEP 41 extension bytes
 //	Response: 20 bytes header + N×6 bytes peers
-func udpAnnounce(conn *net.UDPConn, connID uint64, p AnnounceParams) (*Response, error) {
+func udpAnnounce(conn *net.UDPConn, connID uint64, p AnnounceParams, pathQuery string) (*Response, error) {
 	txnID := randUint32()
 
-	// Build announce request: 98 bytes, fixed layout.
-	var req [98]byte
+	// Build announce request: 98 bytes fixed + BEP 41 options.
+	req := make([]byte, 98)
 	binary.BigEndian.PutUint64(req[0:8], connID)
 	binary.BigEndian.PutUint32(req[8:12], actionAnnounce)
 	binary.BigEndian.PutUint32(req[12:16], txnID)
@@ -134,9 +140,12 @@ func udpAnnounce(conn *net.UDPConn, connID uint64, p AnnounceParams) (*Response,
 	binary.BigEndian.PutUint32(req[92:96], uint32(numWant))
 	binary.BigEndian.PutUint16(req[96:98], p.Port)
 
+	// BEP 41: append URLData option if path/query present.
+	req = append(req, encodeURLDataOption(pathQuery)...)
+
 	// Response: 20-byte header + variable-length compact peers.
 	// Max UDP packet is ~65535 bytes, but trackers typically fit in one packet.
-	resp, err := udpRoundTrip(conn, req[:], 20)
+	resp, err := udpRoundTrip(conn, req, 20)
 	if err != nil {
 		return nil, err
 	}
@@ -222,21 +231,49 @@ func udpRoundTrip(conn *net.UDPConn, req []byte, minResp int) ([]byte, error) {
 	return nil, fmt.Errorf("no response after %d attempts", maxRetries)
 }
 
-// udpHostFromURL extracts host:port from a udp:// tracker URL.
-func udpHostFromURL(rawURL string) (string, error) {
+// udpParseURL extracts host:port and the path+query from a udp:// tracker URL.
+// The path+query is the BEP 41 URLData payload.
+func udpParseURL(rawURL string) (host, pathQuery string, err error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
-		return "", fmt.Errorf("parse URL: %w", err)
+		return "", "", fmt.Errorf("parse URL: %w", err)
 	}
 	if u.Scheme != "udp" {
-		return "", fmt.Errorf("expected udp:// scheme, got %s://", u.Scheme)
+		return "", "", fmt.Errorf("expected udp:// scheme, got %s://", u.Scheme)
 	}
-	host := u.Host
-	if _, _, err := net.SplitHostPort(host); err != nil {
-		// No port specified — unlikely for UDP trackers, but handle it.
+	host = u.Host
+	if _, _, splitErr := net.SplitHostPort(host); splitErr != nil {
 		host = net.JoinHostPort(host, "6969")
 	}
-	return host, nil
+
+	// BEP 41: concatenate path and query.
+	pq := u.Path
+	if u.RawQuery != "" {
+		pq += "?" + u.RawQuery
+	}
+	return host, pq, nil
+}
+
+// encodeURLDataOption encodes the BEP 41 URLData option.
+// Always emits at least an empty URLData (type=0x02, len=0x00) to signal
+// BEP 41 support. Long paths are chunked into 255-byte segments.
+func encodeURLDataOption(pathQuery string) []byte {
+	data := []byte(pathQuery)
+	var opts []byte
+	for len(data) > 0 {
+		chunk := data
+		if len(chunk) > 255 {
+			chunk = data[:255]
+		}
+		opts = append(opts, optURLData, byte(len(chunk)))
+		opts = append(opts, chunk...)
+		data = data[len(chunk):]
+	}
+	if len(opts) == 0 {
+		// Empty URLData signals BEP 41 support.
+		opts = []byte{optURLData, 0x00}
+	}
+	return opts
 }
 
 // eventCode converts the string event name (used by HTTP trackers) to the

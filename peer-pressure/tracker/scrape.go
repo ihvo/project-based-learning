@@ -144,7 +144,7 @@ func parseScrapeResponse(data []byte, infoHashes [][20]byte) ([]ScrapeResult, er
 const actionScrape uint32 = 2
 
 func udpScrape(rawURL string, infoHashes [][20]byte) ([]ScrapeResult, error) {
-	host, err := udpHostFromURL(rawURL)
+	host, _, err := udpParseURL(rawURL)
 	if err != nil {
 		return nil, err
 	}
