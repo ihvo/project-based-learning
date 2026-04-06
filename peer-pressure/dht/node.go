@@ -1,6 +1,8 @@
 package dht
 
 import (
+	"context"
+	"crypto/rand"
 	"encoding/binary"
 	"fmt"
 	"net"
@@ -11,9 +13,16 @@ import (
 )
 
 const (
-	alpha      = 3             // concurrency factor for iterative lookups
+	alpha        = 3             // concurrency factor for iterative lookups
 	queryTimeout = 5 * time.Second
 )
+
+// DefaultBootstrapNodes are well-known DHT bootstrap nodes.
+var DefaultBootstrapNodes = []string{
+	"router.bittorrent.com:6881",
+	"dht.transmissionbt.com:6881",
+	"router.utorrent.com:6881",
+}
 
 // DHT is a BitTorrent DHT node implementing BEP 5.
 type DHT struct {
@@ -383,6 +392,110 @@ func sortByDistance(nodes []Node, target NodeID) {
 			}
 		}
 	}
+}
+
+// Bootstrap resolves and pings well-known DHT nodes, then runs find_node
+// on our own ID to populate the routing table with nearby nodes.
+func (d *DHT) Bootstrap(addrs []string) error {
+	type resolved struct {
+		addr *net.UDPAddr
+		id   NodeID
+	}
+
+	results := make(chan resolved, len(addrs))
+	var wg sync.WaitGroup
+
+	for _, addr := range addrs {
+		wg.Add(1)
+		go func(hostport string) {
+			defer wg.Done()
+			udpAddr, err := net.ResolveUDPAddr("udp4", hostport)
+			if err != nil {
+				return
+			}
+			id, err := d.Ping(udpAddr)
+			if err != nil {
+				return
+			}
+			d.Table.Insert(Node{ID: id, Addr: *udpAddr})
+			results <- resolved{udpAddr, id}
+		}(addr)
+	}
+	go func() { wg.Wait(); close(results) }()
+
+	count := 0
+	for range results {
+		count++
+	}
+	if count == 0 {
+		return fmt.Errorf("bootstrap: all %d nodes unreachable", len(addrs))
+	}
+
+	// Populate the table by finding nodes near ourselves.
+	d.FindNode(d.ID)
+	return nil
+}
+
+// Maintain periodically refreshes stale routing table buckets by running
+// find_node with a random ID in each bucket's range. Cancel the context
+// to stop.
+func (d *DHT) Maintain(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			d.refreshBuckets()
+		}
+	}
+}
+
+// refreshBuckets runs find_node on a random target in each non-empty
+// bucket's ID range to discover fresh nodes.
+func (d *DHT) refreshBuckets() {
+	d.Table.mu.RLock()
+	var stale []int
+	for i, b := range d.Table.buckets {
+		if len(b) > 0 {
+			stale = append(stale, i)
+		}
+	}
+	d.Table.mu.RUnlock()
+
+	for _, idx := range stale {
+		target := randomIDInBucket(d.Table.own, idx)
+		d.FindNode(target)
+	}
+}
+
+// randomIDInBucket generates a random node ID that falls into the given
+// bucket index relative to our own ID.
+func randomIDInBucket(own NodeID, bucketIdx int) NodeID {
+	var target NodeID
+	rand.Read(target[:])
+
+	// The bucket index means XOR(own, target) has its highest bit at position bucketIdx.
+	// We need: bit bucketIdx set, all higher bits cleared.
+	dist := XOR(own, target)
+
+	byteIdx := (159 - bucketIdx) / 8
+	bitIdx := uint(7 - (159-bucketIdx)%8)
+
+	// Clear all bytes before the target byte.
+	for i := 0; i < byteIdx; i++ {
+		dist[i] = 0
+	}
+	// In the target byte: set the specific bit, clear higher bits.
+	dist[byteIdx] = dist[byteIdx] & ((1 << (bitIdx + 1)) - 1)
+	dist[byteIdx] |= 1 << bitIdx
+
+	// XOR back to get the actual target ID.
+	for i := range 20 {
+		target[i] = own[i] ^ dist[i]
+	}
+	return target
 }
 
 // EncodeCompactNodes encodes a list of nodes into the compact format.

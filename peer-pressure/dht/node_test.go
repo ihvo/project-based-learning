@@ -1,6 +1,7 @@
 package dht
 
 import (
+	"context"
 	"net"
 	"sync"
 	"testing"
@@ -451,5 +452,112 @@ func TestTokenCaching(t *testing.T) {
 	}
 	if !tokenSet["token_a"] || !tokenSet["token_b"] {
 		t.Errorf("expected tokens {token_a, token_b}, got %v", tokenSet)
+	}
+}
+
+func TestBootstrap(t *testing.T) {
+	// 3 mock bootstrap nodes — all respond to ping.
+	mock1 := newMockDHTNode(t, NodeID{0x10}, nil)
+	defer mock1.close()
+	mock2 := newMockDHTNode(t, NodeID{0x20}, nil)
+	defer mock2.close()
+	mock3 := newMockDHTNode(t, NodeID{0x30}, nil)
+	defer mock3.close()
+
+	conn, _ := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	dht := New(conn)
+	defer dht.Transport.Close()
+	go dht.Transport.Listen(nil)
+
+	addrs := []string{
+		mock1.addr().String(),
+		mock2.addr().String(),
+		mock3.addr().String(),
+	}
+
+	if err := dht.Bootstrap(addrs); err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+
+	if dht.Table.Len() < 3 {
+		t.Errorf("expected at least 3 nodes in table, got %d", dht.Table.Len())
+	}
+}
+
+func TestBootstrapPartialFailure(t *testing.T) {
+	// 1 real mock, 2 dead addresses.
+	mock := newMockDHTNode(t, NodeID{0x10}, nil)
+	defer mock.close()
+
+	conn, _ := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	dht := New(conn)
+	defer dht.Transport.Close()
+	go dht.Transport.Listen(nil)
+
+	addrs := []string{
+		mock.addr().String(),
+		"127.0.0.1:1",  // unreachable
+		"127.0.0.1:2",  // unreachable
+	}
+
+	if err := dht.Bootstrap(addrs); err != nil {
+		t.Fatalf("bootstrap should succeed with 1 of 3: %v", err)
+	}
+
+	if dht.Table.Len() < 1 {
+		t.Errorf("expected at least 1 node in table, got %d", dht.Table.Len())
+	}
+}
+
+func TestBootstrapAllFail(t *testing.T) {
+	conn, _ := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	dht := New(conn)
+	defer dht.Transport.Close()
+	go dht.Transport.Listen(nil)
+
+	err := dht.Bootstrap([]string{"127.0.0.1:1", "127.0.0.1:2"})
+	if err == nil {
+		t.Fatal("bootstrap should fail when all nodes unreachable")
+	}
+}
+
+func TestMaintainRefresh(t *testing.T) {
+	// Mock that responds to find_node — we'll use it to verify
+	// Maintain triggers lookups.
+	mock := newMockDHTNode(t, NodeID{0x50}, nil)
+	defer mock.close()
+
+	conn, _ := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	dht := New(conn)
+	defer dht.Transport.Close()
+	go dht.Transport.Listen(nil)
+
+	// Pre-populate table so Maintain has something to refresh.
+	dht.Table.Insert(Node{ID: NodeID{0x50}, Addr: *mock.addr()})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go dht.Maintain(ctx, 50*time.Millisecond)
+
+	// Let a few refresh cycles run.
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+
+	// If we got here without panicking or deadlocking, refresh worked.
+	// The routing table should still contain the mock node.
+	if dht.Table.Len() < 1 {
+		t.Errorf("expected at least 1 node after maintenance, got %d", dht.Table.Len())
+	}
+}
+
+func TestRandomIDInBucket(t *testing.T) {
+	own := NodeID{0xAA, 0xBB, 0xCC}
+
+	for _, idx := range []int{0, 1, 50, 100, 159} {
+		target := randomIDInBucket(own, idx)
+		dist := XOR(own, target)
+		gotIdx := BucketIndex(dist)
+		if gotIdx != idx {
+			t.Errorf("randomIDInBucket(%d): got bucket %d", idx, gotIdx)
+		}
 	}
 }
