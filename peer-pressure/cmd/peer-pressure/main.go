@@ -196,10 +196,18 @@ func resolveMagnet(uri string, port uint16) (*torrent.Torrent, []string) {
 	fmt.Printf("Info hash: %x\n", link.InfoHash)
 
 	// Announce to trackers from the magnet link to find peers.
-	var addrs []string
-	if len(link.Trackers) > 0 {
-		addrs = announceAllTrackers(link.Trackers, link.InfoHash, port)
+	// If the magnet has no trackers, try well-known public ones.
+	trackers := link.Trackers
+	if len(trackers) == 0 {
+		trackers = []string{
+			"udp://tracker.opentrackr.org:1337/announce",
+			"udp://open.stealth.si:80/announce",
+			"udp://tracker.openbittorrent.com:6969/announce",
+			"udp://exodus.desync.com:6969/announce",
+		}
+		fmt.Printf("No trackers in magnet, trying %d public trackers\n", len(trackers))
 	}
+	addrs := announceAllTrackers(trackers, link.InfoHash, port)
 	if len(addrs) == 0 {
 		fatal("no peers found (magnet had %d trackers)", len(link.Trackers))
 	}
@@ -212,7 +220,7 @@ func resolveMagnet(uri string, port uint16) (*torrent.Torrent, []string) {
 	}
 
 	// Parse the info dict into a Torrent.
-	t, err := torrent.FromInfoDict(metadata, link.InfoHash, link.Trackers)
+	t, err := torrent.FromInfoDict(metadata, link.InfoHash, trackers)
 	if err != nil {
 		fatal("parse metadata: %v", err)
 	}
