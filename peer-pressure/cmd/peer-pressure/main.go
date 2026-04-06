@@ -5,9 +5,11 @@ import (
 	"crypto/rand"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"strings"
 
+	"github.com/ihvo/peer-pressure/dht"
 	"github.com/ihvo/peer-pressure/download"
 	"github.com/ihvo/peer-pressure/magnet"
 	"github.com/ihvo/peer-pressure/peer"
@@ -97,6 +99,7 @@ func runInfo(args []string) {
 func runPeers(args []string) {
 	fs := flag.NewFlagSet("peers", flag.ExitOnError)
 	port := fs.Int("port", 6881, "port to announce")
+	noDHT := fs.Bool("no-dht", false, "disable DHT peer discovery")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: peer-pressure peers [options] <file.torrent>\n\n")
 		fmt.Fprintf(os.Stderr, "Announce to the tracker and list peers.\n\n")
@@ -115,6 +118,25 @@ func runPeers(args []string) {
 	}
 
 	peers := announceAll(t, uint16(*port))
+
+	// Merge DHT peers.
+	if !*noDHT {
+		dhtPeers, node := discoverDHTPeers(t.InfoHash)
+		if node != nil {
+			node.Transport.Close()
+		}
+		seen := make(map[string]bool)
+		for _, a := range peers {
+			seen[a] = true
+		}
+		for _, a := range dhtPeers {
+			if !seen[a] {
+				seen[a] = true
+				peers = append(peers, a)
+			}
+		}
+	}
+
 	fmt.Printf("Total unique peers: %d\n", len(peers))
 	for _, addr := range peers {
 		fmt.Printf("  %s\n", addr)
@@ -129,6 +151,7 @@ func runDownload(args []string) {
 	port := fs.Int("port", 6881, "port to announce")
 	maxPeers := fs.Int("peers", 30, "max concurrent peer connections")
 	quiet := fs.Bool("q", false, "suppress progress display")
+	noDHT := fs.Bool("no-dht", false, "disable DHT peer discovery")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: peer-pressure download [options] <file.torrent | magnet:?...>\n\n")
 		fmt.Fprintf(os.Stderr, "Download a torrent file or magnet link.\n\n")
@@ -157,6 +180,27 @@ func runDownload(args []string) {
 		addrs = announceAll(t, uint16(*port))
 	}
 
+	// DHT peer discovery.
+	var dhtNode *dht.DHT
+	if !*noDHT {
+		dhtAddrs, node := discoverDHTPeers(t.InfoHash)
+		dhtNode = node
+		if dhtNode != nil {
+			defer dhtNode.Transport.Close()
+		}
+		// Merge DHT peers with tracker peers.
+		seen := make(map[string]bool)
+		for _, a := range addrs {
+			seen[a] = true
+		}
+		for _, a := range dhtAddrs {
+			if !seen[a] {
+				seen[a] = true
+				addrs = append(addrs, a)
+			}
+		}
+	}
+
 	if len(addrs) == 0 {
 		fatal("no peers found in swarm")
 	}
@@ -181,7 +225,36 @@ func runDownload(args []string) {
 		fatal("download: %v", err)
 	}
 
+	// Announce completion to DHT.
+	if dhtNode != nil {
+		dhtNode.AnnouncePeer(t.InfoHash, *port)
+	}
+
 	fmt.Printf("\nDone! Saved to %s\n", outPath)
+}
+
+// discoverDHTPeers starts a DHT node, bootstraps, and looks up peers.
+func discoverDHTPeers(infoHash [20]byte) ([]string, *dht.DHT) {
+	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero})
+	if err != nil {
+		fmt.Printf("DHT: failed to bind UDP: %v\n", err)
+		return nil, nil
+	}
+
+	node := dht.New(conn)
+	go node.Transport.Listen(nil)
+
+	fmt.Printf("DHT: bootstrapping...\n")
+	if err := node.Bootstrap(dht.DefaultBootstrapNodes); err != nil {
+		fmt.Printf("DHT: bootstrap failed: %v\n", err)
+		node.Transport.Close()
+		return nil, nil
+	}
+	fmt.Printf("DHT: routing table has %d nodes\n", node.Table.Len())
+
+	peers := node.GetPeers(infoHash)
+	fmt.Printf("DHT: found %d peers\n", len(peers))
+	return peers, node
 }
 
 // resolveMagnet parses a magnet URI, finds peers, fetches metadata, and
