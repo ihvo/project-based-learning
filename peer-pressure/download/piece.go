@@ -66,7 +66,11 @@ func NegotiateUnchoke(conn *peer.Conn, numPieces int) (bitfield []byte, err erro
 
 	writeErr := make(chan error, 1)
 	go func() {
-		writeErr <- conn.WriteMessage(peer.NewInterested())
+		if err := conn.WriteMessage(peer.NewInterested()); err != nil {
+			writeErr <- err
+			return
+		}
+		writeErr <- conn.Flush()
 	}()
 
 	for {
@@ -168,6 +172,11 @@ func downloadBlocks(conn *peer.Conn, pieceIndex, pieceLength int, onBlock BlockC
 				requestErr <- fmt.Errorf("send request (begin=%d): %w", begin, err)
 				return
 			}
+		}
+		// Flush the buffered writer so all requests hit the wire together.
+		if err := conn.Flush(); err != nil {
+			requestErr <- fmt.Errorf("flush requests: %w", err)
+			return
 		}
 		requestErr <- nil
 	}()

@@ -83,6 +83,7 @@ func (ms *mockServer) handleConn(t *testing.T, raw net.Conn) {
 		defer close(writesDone)
 		for msg := range writeCh {
 			conn.WriteMessage(msg)
+			conn.Flush()
 		}
 	}()
 	defer func() {

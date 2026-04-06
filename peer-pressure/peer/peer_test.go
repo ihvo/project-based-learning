@@ -304,7 +304,11 @@ func TestConnMessageExchange(t *testing.T) {
 
 	// Client sends interested, server reads it
 	go func() {
-		errCh <- clientConn.WriteMessage(NewInterested())
+		err := clientConn.WriteMessage(NewInterested())
+		if err == nil {
+			err = clientConn.Flush()
+		}
+		errCh <- err
 	}()
 
 	msg, err := serverConn.ReadMessage()
@@ -318,7 +322,11 @@ func TestConnMessageExchange(t *testing.T) {
 
 	// Server sends unchoke, client reads it
 	go func() {
-		errCh <- serverConn.WriteMessage(NewUnchoke())
+		err := serverConn.WriteMessage(NewUnchoke())
+		if err == nil {
+			err = serverConn.Flush()
+		}
+		errCh <- err
 	}()
 
 	msg, err = clientConn.ReadMessage()

@@ -8,10 +8,14 @@ import (
 )
 
 // Conn wraps a TCP connection to a BitTorrent peer, providing buffered
-// message-level read/write operations.
+// message-level read/write operations. Both reads and writes are buffered:
+// reads via bufio.Reader (avoids many small Read syscalls when parsing
+// length-prefixed messages), writes via bufio.Writer (batches multiple
+// small Request messages into fewer TCP segments).
 type Conn struct {
 	conn   net.Conn
 	reader *bufio.Reader
+	writer *bufio.Writer
 	// The peer's info from the handshake
 	PeerID   [20]byte
 	InfoHash [20]byte
@@ -77,6 +81,7 @@ func doHandshake(conn net.Conn, infoHash, peerID [20]byte) (*Conn, error) {
 	return &Conn{
 		conn:     conn,
 		reader:   bufio.NewReader(conn),
+		writer:   bufio.NewWriterSize(conn, 64*1024), // 64 KiB write buffer
 		PeerID:   peerHS.PeerID,
 		InfoHash: peerHS.InfoHash,
 	}, nil
@@ -92,9 +97,18 @@ func (c *Conn) ReadMessage() (*Message, error) {
 	return ReadMessage(c.reader)
 }
 
-// WriteMessage sends a message to the peer. Pass nil for keep-alive.
+// WriteMessage writes a message to the buffered writer. The message is NOT
+// immediately sent on the wire — call Flush() to push buffered data to the
+// socket. This lets callers batch multiple small messages (e.g., a burst of
+// Request messages) into fewer TCP segments.
 func (c *Conn) WriteMessage(m *Message) error {
-	return WriteMessage(c.conn, m)
+	return WriteMessage(c.writer, m)
+}
+
+// Flush pushes any buffered write data to the underlying TCP connection.
+// Call this after writing a batch of messages to ensure they're sent.
+func (c *Conn) Flush() error {
+	return c.writer.Flush()
 }
 
 // Close closes the underlying TCP connection.

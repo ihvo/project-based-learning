@@ -34,6 +34,7 @@ func mockPeer(t *testing.T, conn net.Conn, infoHash [20]byte, pieceData []byte, 
 		defer close(writesDone)
 		for msg := range writeCh {
 			pc.WriteMessage(msg)
+			pc.Flush()
 		}
 	}()
 	defer func() {
