@@ -13,6 +13,7 @@ import (
 	"github.com/ihvo/peer-pressure/download"
 	"github.com/ihvo/peer-pressure/magnet"
 	"github.com/ihvo/peer-pressure/peer"
+	"github.com/ihvo/peer-pressure/seed"
 	"github.com/ihvo/peer-pressure/torrent"
 	"github.com/ihvo/peer-pressure/tracker"
 )
@@ -35,6 +36,8 @@ func main() {
 		runPeers(args)
 	case "download":
 		runDownload(args)
+	case "seed":
+		runSeed(args)
 	case "version", "--version", "-v":
 		fmt.Printf("peer-pressure %s\n", client.Version)
 	case "help", "--help", "-h":
@@ -56,6 +59,7 @@ Commands:
   info       Parse and display .torrent file details
   peers      Announce to tracker and list peers in the swarm
   download   Download a torrent
+  seed       Seed a torrent from local data
   version    Print version
   help       Show this help
 
@@ -458,4 +462,83 @@ func announceAll(t *torrent.Torrent, port uint16) []string {
 func fatal(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "error: "+format+"\n", args...)
 	os.Exit(1)
+}
+
+// --- seed ---
+
+func runSeed(args []string) {
+	fs := flag.NewFlagSet("seed", flag.ExitOnError)
+	listen := fs.String("listen", ":6881", "listen address")
+	maxConns := fs.Int("max-conns", 50, "max concurrent connections")
+	uploadSlots := fs.Int("upload-slots", 4, "number of unchoke slots")
+	fs.Parse(args)
+
+	if fs.NArg() < 2 {
+		fmt.Fprintln(os.Stderr, "usage: peer-pressure seed <file.torrent> <data_path> [--listen :6881]")
+		os.Exit(1)
+	}
+
+	torrentPath := fs.Arg(0)
+	dataPath := fs.Arg(1)
+
+	// Parse .torrent file.
+	raw, err := os.ReadFile(torrentPath)
+	if err != nil {
+		fatal("read torrent: %v", err)
+	}
+	t, err := torrent.Parse(raw)
+	if err != nil {
+		fatal("parse torrent: %v", err)
+	}
+
+	fmt.Printf("⚡ Peer Pressure — Seeding\n")
+	fmt.Printf("  Torrent: %s\n", t.Name)
+	fmt.Printf("  Pieces:  %d × %d bytes\n", len(t.Pieces), t.PieceLength)
+	fmt.Printf("  Listen:  %s\n\n", *listen)
+
+	// Verify data integrity.
+	fmt.Print("Verifying data... ")
+	result, err := seed.VerifyData(t, dataPath)
+	if err != nil {
+		fatal("verify: %v", err)
+	}
+	fmt.Printf("%d/%d pieces valid\n", result.ValidPieces, result.TotalPieces)
+	if len(result.InvalidPieces) > 0 {
+		fatal("%d invalid pieces — cannot seed", len(result.InvalidPieces))
+	}
+
+	// Create and run seeder.
+	seeder, err := seed.New(seed.Config{
+		Torrent:     t,
+		DataPath:    dataPath,
+		PeerID:      peerID,
+		ListenAddr:  *listen,
+		MaxConns:    *maxConns,
+		UploadSlots: *uploadSlots,
+	})
+	if err != nil {
+		fatal("create seeder: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Announce to tracker.
+	if t.Announce != "" {
+		go func() {
+			_, _ = tracker.Announce(t.Announce, tracker.AnnounceParams{
+				InfoHash:   t.InfoHash,
+				PeerID:     peerID,
+				Port:       6881,
+				Uploaded:   0,
+				Downloaded: 0,
+				Left:       0,
+				Event:      "started",
+			})
+		}()
+	}
+
+	if err := seeder.Run(ctx); err != nil {
+		fatal("seeder: %v", err)
+	}
 }

@@ -54,6 +54,41 @@ func FromConn(conn net.Conn, infoHash, peerID [20]byte) (*Conn, error) {
 	return pc, nil
 }
 
+// Accept performs a server-side handshake on an incoming connection.
+// It reads the peer's handshake first to learn the requested infohash,
+// then calls lookupHash to validate it. If lookupHash returns false the
+// connection is closed. Otherwise our handshake is sent back.
+func Accept(conn net.Conn, peerID [20]byte, lookupHash func([20]byte) bool) (*Conn, error) {
+	conn.SetDeadline(time.Now().Add(10 * time.Second))
+	defer conn.SetDeadline(time.Time{})
+
+	peerHS, err := ReadHandshake(conn)
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("read peer handshake: %w", err)
+	}
+
+	if !lookupHash(peerHS.InfoHash) {
+		conn.Close()
+		return nil, fmt.Errorf("unknown infohash %x", peerHS.InfoHash)
+	}
+
+	hs := &Handshake{InfoHash: peerHS.InfoHash, PeerID: peerID}
+	if err := WriteHandshake(conn, hs); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("write handshake: %w", err)
+	}
+
+	return &Conn{
+		conn:     conn,
+		reader:   bufio.NewReaderSize(conn, 128*1024),
+		writer:   bufio.NewWriterSize(conn, 128*1024),
+		PeerID:   peerHS.PeerID,
+		InfoHash: peerHS.InfoHash,
+		Reserved: peerHS.Reserved,
+	}, nil
+}
+
 func doHandshake(conn net.Conn, infoHash, peerID [20]byte) (*Conn, error) {
 	hs := &Handshake{InfoHash: infoHash, PeerID: peerID}
 
