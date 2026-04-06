@@ -141,8 +141,8 @@ func TestParsePiecesNotMultipleOf20(t *testing.T) {
 	}
 }
 
-func TestParseMissingAnnounce(t *testing.T) {
-	// Build manually without "announce"
+func TestParseTrackerlessTorrent(t *testing.T) {
+	// Trackerless torrents (DHT/webseed only) omit "announce" — this is valid.
 	data := bencode.Encode(bencode.Dict{
 		"info": bencode.Dict{
 			"length":       bencode.Int(100),
@@ -152,9 +152,12 @@ func TestParseMissingAnnounce(t *testing.T) {
 		},
 	})
 
-	_, err := Parse(data)
-	if err == nil {
-		t.Error("expected error for missing announce")
+	tor, err := Parse(data)
+	if err != nil {
+		t.Fatalf("trackerless torrent should parse: %v", err)
+	}
+	if tor.Announce != "" {
+		t.Errorf("expected empty announce, got %q", tor.Announce)
 	}
 }
 

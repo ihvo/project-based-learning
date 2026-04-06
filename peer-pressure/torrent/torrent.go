@@ -181,16 +181,12 @@ func Parse(data []byte) (*Torrent, error) {
 
 	t := &Torrent{}
 
-	// --- announce ---
-	announceRaw, ok := entries["announce"]
-	if !ok {
-		return nil, fmt.Errorf("torrent: missing 'announce' key")
+	// --- announce (optional — trackerless torrents use DHT/webseeds) ---
+	if announceRaw, ok := entries["announce"]; ok {
+		if announce, ok := announceRaw.Val.(bencode.String); ok {
+			t.Announce = string(announce)
+		}
 	}
-	announce, ok := announceRaw.Val.(bencode.String)
-	if !ok {
-		return nil, fmt.Errorf("torrent: 'announce' is not a string")
-	}
-	t.Announce = string(announce)
 
 	// --- announce-list (BEP 12, optional) ---
 	if alRaw, ok := entries["announce-list"]; ok {

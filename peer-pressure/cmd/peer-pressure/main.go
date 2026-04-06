@@ -194,8 +194,8 @@ func runDownload(args []string) {
 		}()
 	}
 
-	if len(addrs) == 0 && dhtCh != nil {
-		// No tracker peers — must wait for DHT.
+	if len(addrs) == 0 && dhtCh != nil && len(t.URLList) == 0 {
+		// No tracker peers and no webseeds — must wait for DHT.
 		fmt.Printf("No tracker peers, waiting for DHT...\n")
 		r := <-dhtCh
 		dhtCh = nil
@@ -205,7 +205,7 @@ func runDownload(args []string) {
 		}
 	}
 
-	if len(addrs) == 0 {
+	if len(addrs) == 0 && len(t.URLList) == 0 {
 		fatal("no peers found in swarm")
 	}
 

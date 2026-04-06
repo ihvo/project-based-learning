@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -26,10 +27,16 @@ type webseedWorker struct {
 	bytes   atomic.Int64 // total bytes downloaded, for speed tracking
 }
 
-func newWebseedWorker(url string, t *torrent.Torrent, picker *Picker,
+func newWebseedWorker(seedURL string, t *torrent.Torrent, picker *Picker,
 	results chan<- pieceResult, prog *Progress) *webseedWorker {
+	// BEP 19: if the URL ends with '/', append the torrent name.
+	fileURL := seedURL
+	if strings.HasSuffix(fileURL, "/") {
+		fileURL += t.Name
+	}
+
 	return &webseedWorker{
-		url:     url,
+		url:     fileURL,
 		torrent: t,
 		picker:  picker,
 		results: results,

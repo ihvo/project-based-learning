@@ -82,9 +82,14 @@ func File(ctx context.Context, cfg Config) error {
 		pool.run(ctx, initialPeers)
 	}()
 
-	// Start webseed workers — each runs independently like a peer worker.
+	// Start webseed workers — cap at 4 to avoid overwhelming mirrors.
 	var wsWg sync.WaitGroup
-	for _, url := range cfg.WebSeeds {
+	maxWebSeeds := 4
+	webSeeds := cfg.WebSeeds
+	if len(webSeeds) > maxWebSeeds {
+		webSeeds = webSeeds[:maxWebSeeds]
+	}
+	for _, url := range webSeeds {
 		wsWg.Add(1)
 		go func(seedURL string) {
 			defer wsWg.Done()
