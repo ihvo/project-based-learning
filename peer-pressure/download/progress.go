@@ -295,7 +295,7 @@ func (p *Progress) Render(width int) string {
 			sorted = append(sorted, ps)
 		}
 		sort.Slice(sorted, func(i, j int) bool {
-			return sorted[i].Speed > sorted[j].Speed
+			return sorted[i].Bytes > sorted[j].Bytes
 		})
 
 		// Find max speed for bar scaling.
