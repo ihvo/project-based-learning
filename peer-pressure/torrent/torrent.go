@@ -47,6 +47,17 @@ func (t *Torrent) IsPrivate() bool {
 type File struct {
 	Length int      // file size in bytes
 	Path   []string // path components (e.g., ["dir", "subdir", "file.txt"])
+	Attr   string   // BEP 47: file attributes (p=padding, l=symlink, x=executable, h=hidden)
+}
+
+// IsPad reports whether this file is a BEP 47 padding file.
+func (f File) IsPad() bool {
+	for _, c := range f.Attr {
+		if c == 'p' {
+			return true
+		}
+	}
+	return false
 }
 
 // IsSingleFile reports whether this torrent describes a single file.
@@ -117,7 +128,11 @@ func (t *Torrent) String() string {
 		fmt.Fprintf(&b, "Total Size:   %d (%s)\n", t.TotalLength(), formatSize(t.TotalLength()))
 		fmt.Fprintf(&b, "Mode:         multi-file (%d files)\n", len(t.Files))
 		for _, f := range t.Files {
-			fmt.Fprintf(&b, "  %s — %s\n", strings.Join(f.Path, "/"), formatSize(f.Length))
+			pad := ""
+			if f.IsPad() {
+				pad = " [pad]"
+			}
+			fmt.Fprintf(&b, "  %s — %s%s\n", strings.Join(f.Path, "/"), formatSize(f.Length), pad)
 		}
 	}
 	if len(t.URLList) > 0 {
@@ -348,6 +363,11 @@ func parseInfo(t *Torrent, info bencode.Dict) error {
 				path[j] = string(ps)
 			}
 			t.Files[i] = File{Length: int(fl), Path: path}
+
+			// BEP 47: file attributes (optional).
+			if attrVal, ok := fd["attr"].(bencode.String); ok {
+				t.Files[i].Attr = string(attrVal)
+			}
 		}
 	default:
 		return fmt.Errorf("info: missing both 'length' and 'files'")

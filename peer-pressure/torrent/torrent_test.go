@@ -456,3 +456,84 @@ func copyDict(d bencode.Dict) bencode.Dict {
 	}
 	return out
 }
+
+// --- BEP 47: Pad files and file attributes ---
+
+func TestFileAttrParsing(t *testing.T) {
+	info := bencode.Dict{
+		"name":         bencode.String("mydir"),
+		"piece length": bencode.Int(1024),
+		"pieces":       fakePieces(2),
+		"files": bencode.List{
+			bencode.Dict{
+				"length": bencode.Int(800),
+				"path":   bencode.List{bencode.String("data.bin")},
+			},
+			bencode.Dict{
+				"length": bencode.Int(224),
+				"path":   bencode.List{bencode.String(".pad"), bencode.String("224")},
+				"attr":   bencode.String("p"),
+			},
+			bencode.Dict{
+				"length": bencode.Int(500),
+				"path":   bencode.List{bencode.String("readme.txt")},
+				"attr":   bencode.String("x"),
+			},
+		},
+	}
+	top := bencode.Dict{
+		"announce": bencode.String("http://tracker.example.com/announce"),
+		"info":     info,
+	}
+
+	tor, err := Parse(bencode.Encode(top))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	if len(tor.Files) != 3 {
+		t.Fatalf("got %d files, want 3", len(tor.Files))
+	}
+
+	// File 0: no attr.
+	if tor.Files[0].Attr != "" {
+		t.Errorf("file[0].Attr = %q", tor.Files[0].Attr)
+	}
+	if tor.Files[0].IsPad() {
+		t.Error("file[0] should not be pad")
+	}
+
+	// File 1: padding file.
+	if tor.Files[1].Attr != "p" {
+		t.Errorf("file[1].Attr = %q", tor.Files[1].Attr)
+	}
+	if !tor.Files[1].IsPad() {
+		t.Error("file[1] should be pad")
+	}
+	if tor.Files[1].Path[0] != ".pad" {
+		t.Errorf("file[1].Path[0] = %q", tor.Files[1].Path[0])
+	}
+
+	// File 2: executable.
+	if tor.Files[2].Attr != "x" {
+		t.Errorf("file[2].Attr = %q", tor.Files[2].Attr)
+	}
+	if tor.Files[2].IsPad() {
+		t.Error("file[2] should not be pad")
+	}
+}
+
+func TestFileIsPadMultipleAttrs(t *testing.T) {
+	// attr can contain multiple characters.
+	f := File{Length: 100, Path: []string{".pad", "100"}, Attr: "hp"}
+	if !f.IsPad() {
+		t.Error("file with attr 'hp' should be pad")
+	}
+}
+
+func TestFileIsPadEmpty(t *testing.T) {
+	f := File{Length: 100, Path: []string{"data.bin"}}
+	if f.IsPad() {
+		t.Error("file with empty attr should not be pad")
+	}
+}
