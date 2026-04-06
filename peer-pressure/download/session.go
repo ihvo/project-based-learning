@@ -4,10 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"sync"
 	"time"
 
-	"github.com/ihvo/peer-pressure/peer"
 	"github.com/ihvo/peer-pressure/torrent"
 )
 
@@ -57,36 +55,25 @@ func File(ctx context.Context, cfg Config) error {
 		prog = NewProgress(t.Name, numPieces, t.PieceLength, int64(t.TotalLength()))
 	}
 
-	// Limit concurrent peers
-	maxPeers := cfg.MaxPeers
-	if maxPeers <= 0 || maxPeers > len(cfg.Peers) {
-		maxPeers = len(cfg.Peers)
-	}
-	peers := cfg.Peers[:maxPeers]
+	// Peer pool with speed-based rotation
+	pool := newPeerPool(cfg, picker, results, prog)
 
-	pipelineDepth := cfg.PipelineDepth
-	if pipelineDepth <= 0 {
-		pipelineDepth = 5
+	// Split initial peers from the pool
+	maxSlots := cfg.MaxPeers
+	if maxSlots <= 0 {
+		maxSlots = 30
 	}
+	if maxSlots > len(cfg.Peers) {
+		maxSlots = len(cfg.Peers)
+	}
+	initialPeers := cfg.Peers[:maxSlots]
 
-	// Launch workers — one goroutine per peer
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	var wg sync.WaitGroup
-	for _, addr := range peers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			worker(ctx, addr, cfg.PeerID, t, picker, results, prog, pipelineDepth)
-		}()
-	}
-
-	// Close results channel once all workers finish
-	go func() {
-		wg.Wait()
-		close(results)
-	}()
+	// Pool manager runs in background: starts workers, evaluates speeds,
+	// rotates slow peers. Closes results channel when done.
+	go pool.run(ctx, initialPeers)
 
 	// Progress display ticker
 	var tickerDone chan struct{}
@@ -145,68 +132,4 @@ func File(ctx context.Context, cfg Config) error {
 	}
 
 	return nil
-}
-
-// worker runs the download loop for a single peer connection.
-// It connects, handshakes, negotiates unchoke, then loops: pick → download → report.
-// On connection errors, it reconnects and retries — connections dropping is normal
-// in BitTorrent (peers come and go, seeders rate-limit, networks hiccup).
-func worker(ctx context.Context, addr string, peerID [20]byte, t *torrent.Torrent, picker *Picker, results chan<- pieceResult, prog *Progress, pipelineDepth int) {
-	const maxRetries = 5
-	retries := 0
-
-	for retries < maxRetries {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-
-		downloaded := workerSession(ctx, addr, peerID, t, picker, results, prog, pipelineDepth)
-		if downloaded > 0 {
-			retries = 0 // reset on progress
-		} else {
-			retries++
-		}
-
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(time.Duration(retries) * time.Second):
-			// brief backoff before reconnecting
-		}
-	}
-}
-
-// workerSession handles a single connection lifecycle: connect → download pieces
-// until error or no more work. Returns the number of pieces successfully downloaded.
-func workerSession(ctx context.Context, addr string, peerID [20]byte, t *torrent.Torrent, picker *Picker, results chan<- pieceResult, prog *Progress, pipelineDepth int) int {
-	conn, err := peer.Dial(addr, t.InfoHash, peerID)
-	if err != nil {
-		return 0
-	}
-	defer conn.Close()
-
-	bitfield, err := NegotiateUnchoke(conn, len(t.Pieces))
-	if err != nil {
-		return 0
-	}
-
-	picker.AddPeer(bitfield)
-	defer picker.RemovePeer(bitfield)
-
-	if prog != nil {
-		prog.PeerConnected(addr, bitfield)
-		defer prog.PeerDisconnected(addr)
-	}
-
-	// Block callback for progress tracking
-	var onBlock BlockCallback
-	if prog != nil {
-		onBlock = func(_, _, blockLen int) {
-			prog.BlockReceived(addr, blockLen)
-		}
-	}
-
-	return pipelinedDownload(conn, addr, t, picker, bitfield, results, prog, onBlock, pipelineDepth)
 }
