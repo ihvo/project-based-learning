@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/ihvo/peer-pressure/client"
@@ -38,6 +39,8 @@ func main() {
 		runDownload(args)
 	case "seed":
 		runSeed(args)
+	case "create":
+		runCreate(args)
 	case "version", "--version", "-v":
 		fmt.Printf("peer-pressure %s\n", client.Version)
 	case "help", "--help", "-h":
@@ -60,6 +63,7 @@ Commands:
   peers      Announce to tracker and list peers in the swarm
   download   Download a torrent
   seed       Seed a torrent from local data
+  create     Create a .torrent file from local data
   version    Print version
   help       Show this help
 
@@ -541,4 +545,54 @@ func runSeed(args []string) {
 	if err := seeder.Run(ctx); err != nil {
 		fatal("seeder: %v", err)
 	}
+}
+
+// --- create ---
+
+func runCreate(args []string) {
+	fs := flag.NewFlagSet("create", flag.ExitOnError)
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: peer-pressure create [options] <path>\n\n")
+		fmt.Fprintf(os.Stderr, "Create a .torrent file from a file or directory.\n\n")
+		fs.PrintDefaults()
+	}
+	tracker := fs.String("t", "", "tracker announce URL (required)")
+	output := fs.String("o", "", "output .torrent path (default: <name>.torrent)")
+	pieceLen := fs.Int("piece-size", 0, "piece length in bytes (default: auto)")
+	private := fs.Bool("private", false, "set BEP 27 private flag")
+	comment := fs.String("comment", "", "free-text comment")
+	fs.Parse(args)
+
+	if fs.NArg() < 1 {
+		fs.Usage()
+		os.Exit(1)
+	}
+	if *tracker == "" {
+		fatal("tracker URL is required (-t)")
+	}
+
+	path := fs.Arg(0)
+	raw, err := torrent.Create(path, torrent.CreateOpts{
+		Tracker:     *tracker,
+		PieceLength: *pieceLen,
+		Private:     *private,
+		Comment:     *comment,
+	})
+	if err != nil {
+		fatal("create: %v", err)
+	}
+
+	outPath := *output
+	if outPath == "" {
+		outPath = filepath.Base(path) + ".torrent"
+	}
+	if err := os.WriteFile(outPath, raw, 0o644); err != nil {
+		fatal("write: %v", err)
+	}
+
+	t, _ := torrent.Parse(raw)
+	fmt.Printf("Created %s\n", outPath)
+	fmt.Printf("  Info hash: %x\n", t.InfoHash)
+	fmt.Printf("  Pieces:    %d\n", len(t.Pieces))
+	fmt.Printf("  Size:      %d bytes\n", t.TotalLength())
 }
