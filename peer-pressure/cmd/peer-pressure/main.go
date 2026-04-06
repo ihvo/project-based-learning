@@ -124,7 +124,7 @@ func runDownload(args []string) {
 	fs := flag.NewFlagSet("download", flag.ExitOnError)
 	output := fs.String("o", "", "output file path (default: torrent name)")
 	port := fs.Int("port", 6881, "port to announce")
-	maxPeers := fs.Int("peers", 5, "max concurrent peer connections")
+	maxPeers := fs.Int("peers", 30, "max concurrent peer connections")
 	quiet := fs.Bool("q", false, "suppress progress display")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: peer-pressure download [options] <file.torrent>\n\n")

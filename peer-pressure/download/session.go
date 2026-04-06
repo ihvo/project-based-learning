@@ -13,12 +13,13 @@ import (
 
 // Config holds parameters for a full file download.
 type Config struct {
-	Torrent    *torrent.Torrent
-	Peers      []string // "host:port" addresses
-	OutputPath string   // file path for single-file torrents
-	PeerID     [20]byte
-	MaxPeers   int // max concurrent peer connections (0 = unlimited)
-	Quiet      bool // suppress progress display
+	Torrent       *torrent.Torrent
+	Peers         []string // "host:port" addresses
+	OutputPath    string   // file path for single-file torrents
+	PeerID        [20]byte
+	MaxPeers      int // max concurrent peer connections (0 = unlimited)
+	PipelineDepth int // max pieces in flight per peer (0 = default 5)
+	Quiet         bool // suppress progress display
 }
 
 // pieceResult carries the outcome of one piece download back to the orchestrator.
@@ -63,6 +64,11 @@ func File(ctx context.Context, cfg Config) error {
 	}
 	peers := cfg.Peers[:maxPeers]
 
+	pipelineDepth := cfg.PipelineDepth
+	if pipelineDepth <= 0 {
+		pipelineDepth = 5
+	}
+
 	// Launch workers — one goroutine per peer
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -72,7 +78,7 @@ func File(ctx context.Context, cfg Config) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			worker(ctx, addr, cfg.PeerID, t, picker, results, prog)
+			worker(ctx, addr, cfg.PeerID, t, picker, results, prog, pipelineDepth)
 		}()
 	}
 
@@ -145,7 +151,7 @@ func File(ctx context.Context, cfg Config) error {
 // It connects, handshakes, negotiates unchoke, then loops: pick → download → report.
 // On connection errors, it reconnects and retries — connections dropping is normal
 // in BitTorrent (peers come and go, seeders rate-limit, networks hiccup).
-func worker(ctx context.Context, addr string, peerID [20]byte, t *torrent.Torrent, picker *Picker, results chan<- pieceResult, prog *Progress) {
+func worker(ctx context.Context, addr string, peerID [20]byte, t *torrent.Torrent, picker *Picker, results chan<- pieceResult, prog *Progress, pipelineDepth int) {
 	const maxRetries = 5
 	retries := 0
 
@@ -156,7 +162,7 @@ func worker(ctx context.Context, addr string, peerID [20]byte, t *torrent.Torren
 		default:
 		}
 
-		downloaded := workerSession(ctx, addr, peerID, t, picker, results, prog)
+		downloaded := workerSession(ctx, addr, peerID, t, picker, results, prog, pipelineDepth)
 		if downloaded > 0 {
 			retries = 0 // reset on progress
 		} else {
@@ -174,7 +180,7 @@ func worker(ctx context.Context, addr string, peerID [20]byte, t *torrent.Torren
 
 // workerSession handles a single connection lifecycle: connect → download pieces
 // until error or no more work. Returns the number of pieces successfully downloaded.
-func workerSession(ctx context.Context, addr string, peerID [20]byte, t *torrent.Torrent, picker *Picker, results chan<- pieceResult, prog *Progress) int {
+func workerSession(ctx context.Context, addr string, peerID [20]byte, t *torrent.Torrent, picker *Picker, results chan<- pieceResult, prog *Progress, pipelineDepth int) int {
 	conn, err := peer.Dial(addr, t.InfoHash, peerID)
 	if err != nil {
 		return 0
@@ -194,42 +200,13 @@ func workerSession(ctx context.Context, addr string, peerID [20]byte, t *torrent
 		defer prog.PeerDisconnected(addr)
 	}
 
-	downloaded := 0
-	for {
-		select {
-		case <-ctx.Done():
-			return downloaded
-		default:
+	// Block callback for progress tracking
+	var onBlock BlockCallback
+	if prog != nil {
+		onBlock = func(_, _, blockLen int) {
+			prog.BlockReceived(addr, blockLen)
 		}
-
-		idx, ok := picker.Pick(bitfield)
-		if !ok {
-			return downloaded // no more pieces this peer can provide
-		}
-
-		if prog != nil {
-			prog.PieceStarted(idx)
-		}
-
-		pieceLen := t.PieceLen(idx)
-
-		// Block callback for progress tracking
-		var onBlock BlockCallback
-		if prog != nil {
-			onBlock = func(_, _, blockLen int) {
-				prog.BlockReceived(addr, blockLen)
-			}
-		}
-
-		data, err := DownloadAndVerify(conn, idx, pieceLen, t.Pieces[idx], onBlock)
-		if err != nil {
-			picker.Abort(idx)
-			results <- pieceResult{index: idx, err: fmt.Errorf("peer %s: %w", addr, err)}
-			return downloaded // connection likely dead, let worker reconnect
-		}
-
-		picker.Finish(idx)
-		results <- pieceResult{index: idx, data: data, fromAddr: addr}
-		downloaded++
 	}
+
+	return pipelinedDownload(conn, addr, t, picker, bitfield, results, prog, onBlock, pipelineDepth)
 }
