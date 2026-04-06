@@ -180,29 +180,56 @@ func runDownload(args []string) {
 		addrs = announceAll(t, uint16(*port))
 	}
 
-	// DHT peer discovery.
-	var dhtNode *dht.DHT
+	// DHT peer discovery — runs concurrently so it doesn't block download start.
+	type dhtResult struct {
+		peers []string
+		node  *dht.DHT
+	}
+	var dhtCh chan dhtResult
 	if !*noDHT {
-		dhtAddrs, node := discoverDHTPeers(t.InfoHash)
-		dhtNode = node
-		if dhtNode != nil {
-			defer dhtNode.Transport.Close()
-		}
-		// Merge DHT peers with tracker peers.
-		seen := make(map[string]bool)
-		for _, a := range addrs {
-			seen[a] = true
-		}
-		for _, a := range dhtAddrs {
-			if !seen[a] {
-				seen[a] = true
-				addrs = append(addrs, a)
-			}
+		dhtCh = make(chan dhtResult, 1)
+		go func() {
+			peers, node := discoverDHTPeers(t.InfoHash)
+			dhtCh <- dhtResult{peers, node}
+		}()
+	}
+
+	if len(addrs) == 0 && dhtCh != nil {
+		// No tracker peers — must wait for DHT.
+		fmt.Printf("No tracker peers, waiting for DHT...\n")
+		r := <-dhtCh
+		dhtCh = nil
+		addrs = r.peers
+		if r.node != nil {
+			defer r.node.Transport.Close()
 		}
 	}
 
 	if len(addrs) == 0 {
 		fatal("no peers found in swarm")
+	}
+
+	// Collect DHT result if it finished while we were setting up.
+	var dhtNode *dht.DHT
+	if dhtCh != nil {
+		select {
+		case r := <-dhtCh:
+			dhtNode = r.node
+			if dhtNode != nil {
+				defer dhtNode.Transport.Close()
+			}
+			seen := make(map[string]bool)
+			for _, a := range addrs {
+				seen[a] = true
+			}
+			for _, a := range r.peers {
+				if !seen[a] {
+					addrs = append(addrs, a)
+				}
+			}
+		default:
+			// DHT still running — proceed with tracker peers.
+		}
 	}
 
 	outPath := *output
