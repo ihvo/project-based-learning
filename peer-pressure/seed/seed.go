@@ -3,6 +3,7 @@ package seed
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -67,8 +68,8 @@ func (s *Seeder) Run(ctx context.Context) error {
 	}
 	s.listener = ln
 
-	fmt.Printf("Seeding %s on %s (%d pieces)\n",
-		s.cfg.Torrent.Name, ln.Addr(), len(s.cfg.Torrent.Pieces))
+	slog.Info("seeding", "torrent", s.cfg.Torrent.Name, "addr", ln.Addr(),
+		"pieces", len(s.cfg.Torrent.Pieces))
 
 	// Start choker in background.
 	go s.choker.Run(ctx, s.getConns)

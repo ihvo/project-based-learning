@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -22,13 +23,30 @@ import (
 var peerID = client.GeneratePeerID()
 
 func main() {
-	if len(os.Args) < 2 {
+	// Extract --verbose / --debug flags before subcommand dispatch.
+	var filtered []string
+	logLevel := slog.LevelWarn
+	for _, a := range os.Args[1:] {
+		switch a {
+		case "--verbose":
+			logLevel = slog.LevelInfo
+		case "--debug":
+			logLevel = slog.LevelDebug
+		default:
+			filtered = append(filtered, a)
+		}
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+		Level: logLevel,
+	})))
+
+	if len(filtered) == 0 {
 		printUsage()
 		os.Exit(1)
 	}
 
-	cmd := os.Args[1]
-	args := os.Args[2:]
+	cmd := filtered[0]
+	args := filtered[1:]
 
 	switch cmd {
 	case "info":
@@ -56,7 +74,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, `⚡ Peer Pressure — BitTorrent client v%s
 
 Usage:
-  peer-pressure <command> [options]
+  peer-pressure [--verbose|--debug] <command> [options]
 
 Commands:
   info       Parse and display .torrent file details
@@ -66,6 +84,10 @@ Commands:
   create     Create a .torrent file from local data
   version    Print version
   help       Show this help
+
+Global flags:
+  --verbose  Show informational log messages
+  --debug    Show debug-level log messages
 
 Run 'peer-pressure <command> -h' for command-specific help.
 `, client.Version)
@@ -196,7 +218,7 @@ func runDownload(args []string) {
 
 	if len(addrs) == 0 && dhtCh != nil && len(t.URLList) == 0 {
 		// No tracker peers and no webseeds — must wait for DHT.
-		fmt.Printf("No tracker peers, waiting for DHT...\n")
+		slog.Info("no tracker peers, waiting for DHT")
 		r := <-dhtCh
 		dhtCh = nil
 		addrs = r.peers
@@ -238,11 +260,10 @@ func runDownload(args []string) {
 	}
 
 	if len(t.URLList) > 0 {
-		fmt.Printf("Web seeds: %d\n", len(t.URLList))
+		slog.Info("web seeds available", "count", len(t.URLList))
 	}
 
-	fmt.Printf("Found %d peers, downloading %s (%d pieces)...\n",
-		len(addrs), t.Name, len(t.Pieces))
+	slog.Info("starting download", "peers", len(addrs), "name", t.Name, "pieces", len(t.Pieces))
 
 	err := download.File(context.Background(), download.Config{
 		Torrent:    t,
@@ -269,23 +290,23 @@ func runDownload(args []string) {
 func discoverDHTPeers(infoHash [20]byte) ([]string, *dht.DHT) {
 	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero})
 	if err != nil {
-		fmt.Printf("DHT: failed to bind UDP: %v\n", err)
+		slog.Warn("DHT: failed to bind UDP", "error", err)
 		return nil, nil
 	}
 
 	node := dht.New(conn)
 	go node.Transport.Listen(nil)
 
-	fmt.Printf("DHT: bootstrapping...\n")
+	slog.Info("DHT: bootstrapping")
 	if err := node.Bootstrap(dht.DefaultBootstrapNodes); err != nil {
-		fmt.Printf("DHT: bootstrap failed: %v\n", err)
+		slog.Warn("DHT: bootstrap failed", "error", err)
 		node.Transport.Close()
 		return nil, nil
 	}
-	fmt.Printf("DHT: routing table has %d nodes\n", node.Table.Len())
+	slog.Info("DHT: routing table populated", "nodes", node.Table.Len())
 
 	peers := node.GetPeers(infoHash)
-	fmt.Printf("DHT: found %d peers\n", len(peers))
+	slog.Info("DHT: peer lookup complete", "peers", len(peers))
 	return peers, node
 }
 
@@ -297,8 +318,7 @@ func resolveMagnet(uri string, port uint16) (*torrent.Torrent, []string) {
 		fatal("parse magnet: %v", err)
 	}
 
-	fmt.Printf("Magnet: %s\n", link.Name)
-	fmt.Printf("Info hash: %x\n", link.InfoHash)
+	slog.Info("resolving magnet", "name", link.Name, "infohash", fmt.Sprintf("%x", link.InfoHash))
 
 	// Announce to trackers from the magnet link to find peers.
 	// If the magnet has no trackers, try well-known public ones.
@@ -310,7 +330,7 @@ func resolveMagnet(uri string, port uint16) (*torrent.Torrent, []string) {
 			"udp://tracker.openbittorrent.com:6969/announce",
 			"udp://exodus.desync.com:6969/announce",
 		}
-		fmt.Printf("No trackers in magnet, trying %d public trackers\n", len(trackers))
+		slog.Info("no trackers in magnet, trying public trackers", "count", len(trackers))
 	}
 	addrs := announceAllTrackers(trackers, link.InfoHash, port)
 	if len(addrs) == 0 {
@@ -318,7 +338,7 @@ func resolveMagnet(uri string, port uint16) (*torrent.Torrent, []string) {
 	}
 
 	// Fetch metadata from the first peer that supports ut_metadata.
-	fmt.Printf("Fetching metadata from peers...\n")
+	slog.Info("fetching metadata from peers")
 	metadata := fetchMetadataFromPeers(addrs, link.InfoHash)
 	if metadata == nil {
 		fatal("could not fetch metadata from any peer")
@@ -330,7 +350,7 @@ func resolveMagnet(uri string, port uint16) (*torrent.Torrent, []string) {
 		fatal("parse metadata: %v", err)
 	}
 
-	fmt.Printf("Got metadata: %s (%d pieces)\n", t.Name, len(t.Pieces))
+	slog.Info("metadata acquired", "name", t.Name, "pieces", len(t.Pieces))
 	return t, addrs
 }
 
@@ -362,11 +382,11 @@ func fetchMetadataFromPeers(addrs []string, infoHash [20]byte) []byte {
 		data, err := magnet.FetchMetadata(conn, infoHash)
 		conn.Close()
 		if err != nil {
-			fmt.Printf("  metadata from %s: %v\n", addr, err)
+			slog.Debug("metadata fetch failed", "peer", addr, "error", err)
 			continue
 		}
 
-		fmt.Printf("  got metadata from %s (%d bytes)\n", addr, len(data))
+		slog.Debug("metadata received", "peer", addr, "bytes", len(data))
 		return data
 	}
 	return nil
@@ -382,7 +402,7 @@ func announceAllTrackers(trackers []string, infoHash [20]byte, port uint16) []st
 
 	for _, trackerURL := range trackers {
 		go func(url string) {
-			fmt.Printf("Announcing to %s...\n", url)
+			slog.Debug("announcing", "tracker", url)
 			resp, err := tracker.Announce(url, tracker.AnnounceParams{
 				InfoHash: infoHash,
 				PeerID:   peerID,
@@ -400,10 +420,10 @@ func announceAllTrackers(trackers []string, infoHash [20]byte, port uint16) []st
 	for range len(trackers) {
 		r := <-ch
 		if r.err != nil {
-			fmt.Printf("  tracker error: %v\n", r.err)
+			slog.Debug("tracker error", "error", r.err)
 			continue
 		}
-		fmt.Printf("  got %d peers\n", len(r.resp.Peers))
+		slog.Debug("tracker responded", "peers", len(r.resp.Peers))
 		for _, p := range r.resp.Peers {
 			a := p.Addr()
 			if !seen[a] {
@@ -428,7 +448,7 @@ func announceAll(t *torrent.Torrent, port uint16) []string {
 
 	for _, trackerURL := range trackers {
 		go func(url string) {
-			fmt.Printf("Announcing to %s...\n", url)
+			slog.Debug("announcing", "tracker", url)
 			resp, err := tracker.Announce(url, tracker.AnnounceParams{
 				InfoHash: t.InfoHash,
 				PeerID:   peerID,
@@ -447,11 +467,11 @@ func announceAll(t *torrent.Torrent, port uint16) []string {
 	for range len(trackers) {
 		r := <-ch
 		if r.err != nil {
-			fmt.Printf("  tracker error: %v\n", r.err)
+			slog.Debug("tracker error", "tracker", r.url, "error", r.err)
 			continue
 		}
-		fmt.Printf("  got %d peers (seeders: %d, leechers: %d)\n",
-			len(r.resp.Peers), r.resp.Complete, r.resp.Incomplete)
+		slog.Info("tracker responded", "tracker", r.url, "peers", len(r.resp.Peers),
+			"seeders", r.resp.Complete, "leechers", r.resp.Incomplete)
 		for _, p := range r.resp.Peers {
 			addr := p.Addr()
 			if !seen[addr] {
