@@ -42,10 +42,11 @@ func (p Peer) Addr() string {
 
 // Response holds the tracker's response to an announce request.
 type Response struct {
-	Interval int    // seconds between re-announces
-	Peers    []Peer // peers in the swarm
-	Complete int    // seeders (optional)
-	Incomplete int  // leechers (optional)
+	Interval   int    // seconds between re-announces
+	Peers      []Peer // peers in the swarm
+	Complete   int    // seeders (optional)
+	Incomplete int    // leechers (optional)
+	ExternalIP net.IP // BEP 24: our IP as seen by the tracker (nil if not provided)
 }
 
 // AnnounceParams holds the parameters for an announce request.
@@ -181,6 +182,21 @@ func parseResponse(data []byte) (*Response, error) {
 	}
 	if ic, ok := d["incomplete"].(bencode.Int); ok {
 		r.Incomplete = int(ic)
+	}
+
+	// BEP 24: external IP as seen by the tracker
+	if extIP, ok := d["external ip"]; ok {
+		if s, ok := extIP.(bencode.String); ok {
+			raw := []byte(s)
+			switch len(raw) {
+			case net.IPv4len:
+				r.ExternalIP = net.IPv4(raw[0], raw[1], raw[2], raw[3])
+			case net.IPv6len:
+				ip := make(net.IP, net.IPv6len)
+				copy(ip, raw)
+				r.ExternalIP = ip
+			}
+		}
 	}
 
 	// peers — compact format (byte string) or dictionary format (list)

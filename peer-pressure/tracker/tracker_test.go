@@ -272,3 +272,125 @@ func containsSubstring(s, sub string) bool {
 	}
 	return false
 }
+
+// --- BEP 24: External IP tests ---
+
+func buildResponseDict(extra map[string]bencode.Value) []byte {
+	d := bencode.Dict{
+		"interval": bencode.Int(900),
+		"peers":    bencode.String(""),
+	}
+	for k, v := range extra {
+		d[k] = v
+	}
+	return bencode.Encode(d)
+}
+
+func TestParseResponse_ExternalIPv4(t *testing.T) {
+	ip := bencode.String([]byte{203, 0, 113, 42})
+	data := buildResponseDict(map[string]bencode.Value{"external ip": ip})
+	r, err := parseResponse(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := net.IPv4(203, 0, 113, 42)
+	if !r.ExternalIP.Equal(want) {
+		t.Errorf("ExternalIP = %v, want %v", r.ExternalIP, want)
+	}
+}
+
+func TestParseResponse_ExternalIPv6(t *testing.T) {
+	raw := net.ParseIP("2001:db8::1")
+	ip := bencode.String([]byte(raw.To16()))
+	data := buildResponseDict(map[string]bencode.Value{"external ip": ip})
+	r, err := parseResponse(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := net.ParseIP("2001:db8::1")
+	if !r.ExternalIP.Equal(want) {
+		t.Errorf("ExternalIP = %v, want %v", r.ExternalIP, want)
+	}
+}
+
+func TestParseResponse_ExternalIPMissing(t *testing.T) {
+	data := buildResponseDict(nil)
+	r, err := parseResponse(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.ExternalIP != nil {
+		t.Errorf("ExternalIP = %v, want nil", r.ExternalIP)
+	}
+}
+
+func TestParseResponse_ExternalIPInvalidLength(t *testing.T) {
+	ip := bencode.String([]byte{1, 2, 3, 4, 5, 6, 7})
+	data := buildResponseDict(map[string]bencode.Value{"external ip": ip})
+	r, err := parseResponse(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.ExternalIP != nil {
+		t.Errorf("ExternalIP = %v, want nil for invalid length", r.ExternalIP)
+	}
+}
+
+func TestParseResponse_ExternalIPEmptyString(t *testing.T) {
+	ip := bencode.String("")
+	data := buildResponseDict(map[string]bencode.Value{"external ip": ip})
+	r, err := parseResponse(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.ExternalIP != nil {
+		t.Errorf("ExternalIP = %v, want nil for empty", r.ExternalIP)
+	}
+}
+
+func TestParseResponse_ExternalIPNotString(t *testing.T) {
+	data := buildResponseDict(map[string]bencode.Value{"external ip": bencode.Int(42)})
+	r, err := parseResponse(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.ExternalIP != nil {
+		t.Errorf("ExternalIP = %v, want nil for non-string type", r.ExternalIP)
+	}
+}
+
+func TestParseResponse_ExternalIPWithPeers(t *testing.T) {
+	peer1 := []byte{192, 168, 1, 1, 0x1A, 0xE1}
+	ip := bencode.String([]byte{10, 0, 0, 1})
+	d := bencode.Dict{
+		"interval":    bencode.Int(900),
+		"peers":       bencode.String(peer1),
+		"external ip": ip,
+	}
+	data := bencode.Encode(d)
+	r, err := parseResponse(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Peers) != 1 {
+		t.Fatalf("got %d peers, want 1", len(r.Peers))
+	}
+	if !r.Peers[0].IP.Equal(net.IPv4(192, 168, 1, 1)) {
+		t.Errorf("peer IP = %v", r.Peers[0].IP)
+	}
+	if !r.ExternalIP.Equal(net.IPv4(10, 0, 0, 1)) {
+		t.Errorf("ExternalIP = %v, want 10.0.0.1", r.ExternalIP)
+	}
+}
+
+func TestParseResponse_ExternalIPLoopback(t *testing.T) {
+	ip := bencode.String([]byte{127, 0, 0, 1})
+	data := buildResponseDict(map[string]bencode.Value{"external ip": ip})
+	r, err := parseResponse(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.ExternalIP.Equal(net.IPv4(127, 0, 0, 1)) {
+		t.Errorf("ExternalIP = %v, want 127.0.0.1", r.ExternalIP)
+	}
+}
