@@ -26,6 +26,7 @@ const hashLen = 20 // SHA-1 produces 20-byte hashes
 type Torrent struct {
 	Announce     string        // primary tracker URL
 	AnnounceList [][]string    // multi-tracker tiers (BEP 12); nil if absent
+	URLList      []string      // HTTP seed URLs (BEP 19); nil if absent
 	InfoHash     [hashLen]byte // SHA-1 of the raw bencoded info dict
 	Name         string        // suggested file/directory name
 	PieceLength  int           // bytes per piece
@@ -109,6 +110,12 @@ func (t *Torrent) String() string {
 		fmt.Fprintf(&b, "Mode:         multi-file (%d files)\n", len(t.Files))
 		for _, f := range t.Files {
 			fmt.Fprintf(&b, "  %s — %s\n", strings.Join(f.Path, "/"), formatSize(f.Length))
+		}
+	}
+	if len(t.URLList) > 0 {
+		fmt.Fprintf(&b, "Web Seeds:    %d\n", len(t.URLList))
+		for _, u := range t.URLList {
+			fmt.Fprintf(&b, "  %s\n", u)
 		}
 	}
 	return b.String()
@@ -198,6 +205,26 @@ func Parse(data []byte) (*Torrent, error) {
 					}
 					if len(urls) > 0 {
 						t.AnnounceList = append(t.AnnounceList, urls)
+					}
+				}
+			}
+		}
+	}
+
+	// --- url-list (BEP 19, optional) ---
+	if ulRaw, ok := entries["url-list"]; ok {
+		switch v := ulRaw.Val.(type) {
+		case bencode.String:
+			// Single URL as a string.
+			if u := string(v); u != "" {
+				t.URLList = append(t.URLList, u)
+			}
+		case bencode.List:
+			// List of URLs.
+			for _, item := range v {
+				if s, ok := item.(bencode.String); ok {
+					if u := string(s); u != "" {
+						t.URLList = append(t.URLList, u)
 					}
 				}
 			}

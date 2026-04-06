@@ -108,13 +108,9 @@ func newPeerPool(cfg Config, picker *Picker, results chan<- pieceResult, prog *P
 }
 
 // run starts workers and manages the peer rotation loop.
-// Blocks until ctx is canceled. Waits for all workers to finish,
-// then closes the results channel.
+// Blocks until ctx is canceled. Waits for all workers to finish.
 func (p *peerPool) run(ctx context.Context, initialPeers []string) {
-	defer func() {
-		p.wg.Wait()
-		close(p.results)
-	}()
+	defer p.wg.Wait()
 
 	// Launch initial workers.
 	for _, addr := range initialPeers {

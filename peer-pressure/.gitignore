@@ -1,2 +1,6 @@
 *.iso
+*.dmg
+*.mp4
+*.mkv
+*.avi
 .DS_Store

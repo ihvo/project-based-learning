@@ -254,3 +254,56 @@ func TestFromInfoDict(t *testing.T) {
 		t.Errorf("AnnounceList: got %v, want [[%v]]", tor.AnnounceList, trackers)
 	}
 }
+
+func TestParseURLList(t *testing.T) {
+	info := bencode.Dict{
+		"name":         bencode.String("test.bin"),
+		"piece length": bencode.Int(256),
+		"pieces":       fakePieces(1),
+		"length":       bencode.Int(256),
+	}
+
+	t.Run("single string", func(t *testing.T) {
+		top := bencode.Dict{
+			"announce": bencode.String("http://tracker.example.com/announce"),
+			"info":     info,
+			"url-list": bencode.String("https://mirror.example.com/test.bin"),
+		}
+		tor, err := Parse(bencode.Encode(top))
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		if len(tor.URLList) != 1 || tor.URLList[0] != "https://mirror.example.com/test.bin" {
+			t.Errorf("URLList: got %v", tor.URLList)
+		}
+	})
+
+	t.Run("list", func(t *testing.T) {
+		top := bencode.Dict{
+			"announce": bencode.String("http://tracker.example.com/announce"),
+			"info":     info,
+			"url-list": bencode.List{
+				bencode.String("https://a.example.com/test.bin"),
+				bencode.String("https://b.example.com/test.bin"),
+			},
+		}
+		tor, err := Parse(bencode.Encode(top))
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		if len(tor.URLList) != 2 {
+			t.Errorf("URLList: got %d URLs, want 2", len(tor.URLList))
+		}
+	})
+
+	t.Run("absent", func(t *testing.T) {
+		data := buildTorrent(t, info)
+		tor, err := Parse(data)
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		if len(tor.URLList) != 0 {
+			t.Errorf("URLList should be empty, got %v", tor.URLList)
+		}
+	})
+}

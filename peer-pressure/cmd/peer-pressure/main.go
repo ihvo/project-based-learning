@@ -237,12 +237,17 @@ func runDownload(args []string) {
 		outPath = t.Name
 	}
 
+	if len(t.URLList) > 0 {
+		fmt.Printf("Web seeds: %d\n", len(t.URLList))
+	}
+
 	fmt.Printf("Found %d peers, downloading %s (%d pieces)...\n",
 		len(addrs), t.Name, len(t.Pieces))
 
 	err := download.File(context.Background(), download.Config{
 		Torrent:    t,
 		Peers:      addrs,
+		WebSeeds:   t.URLList,
 		OutputPath: outPath,
 		PeerID:     peerID,
 		MaxPeers:   *maxPeers,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/ihvo/peer-pressure/torrent"
@@ -13,6 +14,7 @@ import (
 type Config struct {
 	Torrent       *torrent.Torrent
 	Peers         []string // "host:port" addresses
+	WebSeeds      []string // HTTP seed URLs (BEP 19)
 	OutputPath    string   // file path for single-file torrents
 	PeerID        [20]byte
 	MaxPeers      int // max concurrent peer connections (0 = unlimited)
@@ -72,8 +74,31 @@ func File(ctx context.Context, cfg Config) error {
 	defer cancel()
 
 	// Pool manager runs in background: starts workers, evaluates speeds,
-	// rotates slow peers. Closes results channel when done.
-	go pool.run(ctx, initialPeers)
+	// rotates slow peers.
+	var poolDone sync.WaitGroup
+	poolDone.Add(1)
+	go func() {
+		defer poolDone.Done()
+		pool.run(ctx, initialPeers)
+	}()
+
+	// Start webseed workers — each runs independently like a peer worker.
+	var wsWg sync.WaitGroup
+	for _, url := range cfg.WebSeeds {
+		wsWg.Add(1)
+		go func(seedURL string) {
+			defer wsWg.Done()
+			ws := newWebseedWorker(seedURL, t, picker, results, prog)
+			ws.run(ctx)
+		}(url)
+	}
+
+	// Close results channel once all producers (pool + webseeds) finish.
+	go func() {
+		poolDone.Wait()
+		wsWg.Wait()
+		close(results)
+	}()
 
 	// Progress display ticker
 	var tickerDone chan struct{}
