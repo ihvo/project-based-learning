@@ -31,10 +31,12 @@ const (
 	MsgPiece         uint8 = 7
 	MsgCancel        uint8 = 8
 
-	// BEP 6 — Fast Extension. We only handle HaveAll/HaveNone for now
-	// because real-world seeders send these instead of a full bitfield.
-	MsgHaveAll  uint8 = 14
-	MsgHaveNone uint8 = 15
+	// BEP 6 — Fast Extension.
+	MsgSuggestPiece  uint8 = 13
+	MsgHaveAll       uint8 = 14
+	MsgHaveNone      uint8 = 15
+	MsgRejectRequest uint8 = 16
+	MsgAllowedFast   uint8 = 17
 
 	// BEP 10 — Extension Protocol. Extended messages carry a sub-ID
 	// in the first payload byte. Sub-ID 0 is the extension handshake.
@@ -55,15 +57,21 @@ func (h *Handshake) SupportsExtensions() bool {
 	return h.Reserved[5]&0x10 != 0
 }
 
+// SupportsFast returns true if the peer set bit 61 (BEP 6 Fast Extension).
+func (h *Handshake) SupportsFast() bool {
+	return h.Reserved[7]&0x04 != 0
+}
+
 // WriteHandshake serializes and writes a handshake to w.
 // Sets reserved bit 43 to advertise BEP 10 extension protocol support.
 func WriteHandshake(w io.Writer, h *Handshake) error {
 	var buf [handshakeLen]byte
 	buf[0] = byte(len(protocolStr))
 	copy(buf[1:20], protocolStr)
-	// bytes 20-27: reserved — set bit 43 for BEP 10
+	// bytes 20-27: reserved — set bit 43 for BEP 10, bit 61 for BEP 6
 	copy(buf[20:28], h.Reserved[:])
-	buf[25] |= 0x10 // bit 43 = byte 5, bit 4
+	buf[25] |= 0x10 // bit 43 = byte 5, bit 4 (BEP 10)
+	buf[27] |= 0x04 // bit 61 = byte 7, bit 2 (BEP 6)
 	copy(buf[28:48], h.InfoHash[:])
 	copy(buf[48:68], h.PeerID[:])
 
@@ -205,6 +213,31 @@ func NewCancel(index, begin, length uint32) *Message {
 	binary.BigEndian.PutUint32(payload[4:8], begin)
 	binary.BigEndian.PutUint32(payload[8:12], length)
 	return &Message{ID: MsgCancel, Payload: payload}
+}
+
+// BEP 6 — Fast Extension message constructors.
+
+func NewSuggestPiece(index uint32) *Message {
+	payload := make([]byte, 4)
+	binary.BigEndian.PutUint32(payload, index)
+	return &Message{ID: MsgSuggestPiece, Payload: payload}
+}
+
+func NewHaveAll() *Message  { return &Message{ID: MsgHaveAll} }
+func NewHaveNone() *Message { return &Message{ID: MsgHaveNone} }
+
+func NewRejectRequest(index, begin, length uint32) *Message {
+	payload := make([]byte, 12)
+	binary.BigEndian.PutUint32(payload[0:4], index)
+	binary.BigEndian.PutUint32(payload[4:8], begin)
+	binary.BigEndian.PutUint32(payload[8:12], length)
+	return &Message{ID: MsgRejectRequest, Payload: payload}
+}
+
+func NewAllowedFast(index uint32) *Message {
+	payload := make([]byte, 4)
+	binary.BigEndian.PutUint32(payload, index)
+	return &Message{ID: MsgAllowedFast, Payload: payload}
 }
 
 // --- Payload parsers ---
