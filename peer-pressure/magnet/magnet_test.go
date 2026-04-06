@@ -5,6 +5,8 @@ import (
 	"testing"
 )
 
+const testHashHex = "a89dd41fc8201849488a04623b3c0dc45d1a8c4e"
+
 func TestParseHex(t *testing.T) {
 	uri := "magnet:?xt=urn:btih:a89dd41fc8201849488a04623b3c0dc45d1a8c4e&dn=openttd&tr=udp://tracker.opentrackr.org:1337/announce"
 	link, err := Parse(uri)
@@ -109,5 +111,101 @@ func TestLinkString(t *testing.T) {
 	}
 	if got.Name != link.Name {
 		t.Errorf("name mismatch: got %q, want %q", got.Name, link.Name)
+	}
+}
+
+// --- BEP 53: Select-only file indices ---
+
+func TestParseMagnetSelectOnly(t *testing.T) {
+	uri := "magnet:?xt=urn:btih:" + testHashHex + "&so=0,2,4,6-8"
+	link, err := Parse(uri)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	want := []int{0, 2, 4, 6, 7, 8}
+	if len(link.SelectOnly) != len(want) {
+		t.Fatalf("SelectOnly: got %v, want %v", link.SelectOnly, want)
+	}
+	for i, idx := range link.SelectOnly {
+		if idx != want[i] {
+			t.Errorf("SelectOnly[%d] = %d, want %d", i, idx, want[i])
+		}
+	}
+}
+
+func TestParseMagnetSelectOnlySingle(t *testing.T) {
+	uri := "magnet:?xt=urn:btih:" + testHashHex + "&so=3"
+	link, err := Parse(uri)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(link.SelectOnly) != 1 || link.SelectOnly[0] != 3 {
+		t.Errorf("SelectOnly: got %v, want [3]", link.SelectOnly)
+	}
+}
+
+func TestParseMagnetSelectOnlyAbsent(t *testing.T) {
+	uri := "magnet:?xt=urn:btih:" + testHashHex
+	link, err := Parse(uri)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(link.SelectOnly) != 0 {
+		t.Errorf("SelectOnly should be empty, got %v", link.SelectOnly)
+	}
+}
+
+func TestParseMagnetSelectOnlyInvalid(t *testing.T) {
+	uri := "magnet:?xt=urn:btih:" + testHashHex + "&so=a,b"
+	_, err := Parse(uri)
+	if err == nil {
+		t.Error("expected error for invalid so parameter")
+	}
+}
+
+func TestParseMagnetSelectOnlyBadRange(t *testing.T) {
+	uri := "magnet:?xt=urn:btih:" + testHashHex + "&so=8-3"
+	_, err := Parse(uri)
+	if err == nil {
+		t.Error("expected error for reversed range")
+	}
+}
+
+func TestFormatSelectOnly(t *testing.T) {
+	tests := []struct {
+		indices []int
+		want    string
+	}{
+		{[]int{0, 2, 4, 6, 7, 8}, "0,2,4,6-8"},
+		{[]int{3}, "3"},
+		{[]int{1, 2, 3, 4, 5}, "1-5"},
+		{[]int{0, 1, 3, 5, 6, 7}, "0-1,3,5-7"},
+		{nil, ""},
+	}
+	for _, tt := range tests {
+		got := formatSelectOnly(tt.indices)
+		if got != tt.want {
+			t.Errorf("formatSelectOnly(%v) = %q, want %q", tt.indices, got, tt.want)
+		}
+	}
+}
+
+func TestSelectOnlyRoundTrip(t *testing.T) {
+	link := &Link{
+		InfoHash:   [20]byte{0xde, 0xad, 0xbe, 0xef, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10},
+		SelectOnly: []int{0, 2, 4, 6, 7, 8},
+	}
+	uri := link.String()
+	got, err := Parse(uri)
+	if err != nil {
+		t.Fatalf("round-trip parse: %v", err)
+	}
+	if len(got.SelectOnly) != len(link.SelectOnly) {
+		t.Fatalf("SelectOnly length: got %d, want %d", len(got.SelectOnly), len(link.SelectOnly))
+	}
+	for i, idx := range got.SelectOnly {
+		if idx != link.SelectOnly[i] {
+			t.Errorf("SelectOnly[%d] = %d, want %d", i, idx, link.SelectOnly[i])
+		}
 	}
 }
