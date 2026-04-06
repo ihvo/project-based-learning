@@ -26,6 +26,9 @@ type ExtHandshake struct {
 
 	// V is the client name/version string (optional, informational).
 	V string
+
+	// UploadOnly indicates the peer is a partial seed (BEP 21).
+	UploadOnly bool
 }
 
 // NewExtHandshake creates an extension handshake message (sub-ID 0)
@@ -100,6 +103,13 @@ func ParseExtHandshake(payload []byte) (*ExtHandshake, error) {
 	if vVal, ok := d["v"]; ok {
 		if v, ok := vVal.(bencode.String); ok {
 			hs.V = string(v)
+		}
+	}
+
+	// BEP 21: parse top-level "upload_only" state
+	if uoVal, ok := d["upload_only"]; ok {
+		if uo, ok := uoVal.(bencode.Int); ok {
+			hs.UploadOnly = uo != 0
 		}
 	}
 
