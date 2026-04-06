@@ -33,6 +33,13 @@ type Torrent struct {
 	Pieces       [][hashLen]byte // SHA-1 hash for each piece
 	Length       int           // total size in bytes (single-file mode)
 	Files        []File        // file list (multi-file mode; empty for single-file)
+	Private      bool          // BEP 27: true when info.private == 1
+}
+
+// IsPrivate reports whether this torrent has the BEP 27 private flag set.
+// Private torrents must not use DHT, PEX, or Local Peer Discovery.
+func (t *Torrent) IsPrivate() bool {
+	return t.Private
 }
 
 // File represents one file in a multi-file torrent.
@@ -324,6 +331,13 @@ func parseInfo(t *Torrent, info bencode.Dict) error {
 		}
 	default:
 		return fmt.Errorf("info: missing both 'length' and 'files'")
+	}
+
+	// BEP 27: private flag. Only integer value 1 means private.
+	if privVal, ok := info["private"]; ok {
+		if privInt, ok := privVal.(bencode.Int); ok && privInt == 1 {
+			t.Private = true
+		}
 	}
 
 	return nil

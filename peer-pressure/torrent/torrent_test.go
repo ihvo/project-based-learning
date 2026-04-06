@@ -310,3 +310,88 @@ func TestParseURLList(t *testing.T) {
 		}
 	})
 }
+
+// --- BEP 27: Private torrents ---
+
+func TestPrivateFlag(t *testing.T) {
+	base := bencode.Dict{
+		"name":         bencode.String("test"),
+		"piece length": bencode.Int(262144),
+		"pieces":       fakePieces(1),
+		"length":       bencode.Int(1024),
+	}
+
+	t.Run("private=1", func(t *testing.T) {
+		info := copyDict(base)
+		info["private"] = bencode.Int(1)
+		tor, err := Parse(buildTorrent(t, info))
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		if !tor.IsPrivate() {
+			t.Error("expected IsPrivate() == true")
+		}
+	})
+
+	t.Run("private=0", func(t *testing.T) {
+		info := copyDict(base)
+		info["private"] = bencode.Int(0)
+		tor, err := Parse(buildTorrent(t, info))
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		if tor.IsPrivate() {
+			t.Error("expected IsPrivate() == false for private=0")
+		}
+	})
+
+	t.Run("absent", func(t *testing.T) {
+		tor, err := Parse(buildTorrent(t, base))
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		if tor.IsPrivate() {
+			t.Error("expected IsPrivate() == false when key absent")
+		}
+	})
+
+	t.Run("negative", func(t *testing.T) {
+		info := copyDict(base)
+		info["private"] = bencode.Int(-1)
+		tor, err := Parse(buildTorrent(t, info))
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		if tor.IsPrivate() {
+			t.Error("expected IsPrivate() == false for private=-1")
+		}
+	})
+}
+
+func TestPrivateFlagFromInfoDict(t *testing.T) {
+	info := bencode.Dict{
+		"name":         bencode.String("test"),
+		"piece length": bencode.Int(262144),
+		"pieces":       fakePieces(1),
+		"length":       bencode.Int(1024),
+		"private":      bencode.Int(1),
+	}
+	rawInfo := bencode.Encode(info)
+	h := sha1.Sum(rawInfo)
+
+	tor, err := FromInfoDict(rawInfo, h, []string{"http://t.example.com/announce"})
+	if err != nil {
+		t.Fatalf("FromInfoDict: %v", err)
+	}
+	if !tor.IsPrivate() {
+		t.Error("expected IsPrivate() == true via FromInfoDict path")
+	}
+}
+
+func copyDict(d bencode.Dict) bencode.Dict {
+	out := make(bencode.Dict, len(d))
+	for k, v := range d {
+		out[k] = v
+	}
+	return out
+}

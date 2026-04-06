@@ -115,8 +115,8 @@ func runPeers(args []string) {
 
 	peers := announceAll(t, uint16(*port))
 
-	// Merge DHT peers.
-	if !*noDHT {
+	// Merge DHT peers (disabled for private torrents per BEP 27).
+	if !*noDHT && !t.IsPrivate() {
 		dhtPeers, node := discoverDHTPeers(t.InfoHash)
 		if node != nil {
 			node.Transport.Close()
@@ -182,7 +182,7 @@ func runDownload(args []string) {
 		node  *dht.DHT
 	}
 	var dhtCh chan dhtResult
-	if !*noDHT {
+	if !*noDHT && !t.IsPrivate() {
 		dhtCh = make(chan dhtResult, 1)
 		go func() {
 			peers, node := discoverDHTPeers(t.InfoHash)
