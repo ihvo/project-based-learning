@@ -394,3 +394,168 @@ func TestParseResponse_ExternalIPLoopback(t *testing.T) {
 		t.Errorf("ExternalIP = %v, want 127.0.0.1", r.ExternalIP)
 	}
 }
+
+// --- BEP 7: IPv6 Tracker Extension tests ---
+
+func TestParseCompactPeers6(t *testing.T) {
+	// Two IPv6 peers: [2001:db8::1]:6881 and [::1]:8080
+	data := make([]byte, 36)
+	copy(data[0:16], net.ParseIP("2001:db8::1").To16())
+	binary.BigEndian.PutUint16(data[16:18], 6881)
+	copy(data[18:34], net.ParseIP("::1").To16())
+	binary.BigEndian.PutUint16(data[34:36], 8080)
+
+	peers, err := parseCompactPeers6(data)
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if len(peers) != 2 {
+		t.Fatalf("got %d peers, want 2", len(peers))
+	}
+	if !peers[0].IP.Equal(net.ParseIP("2001:db8::1")) {
+		t.Errorf("peer[0].IP = %v", peers[0].IP)
+	}
+	if peers[0].Port != 6881 {
+		t.Errorf("peer[0].Port = %d", peers[0].Port)
+	}
+	if !peers[1].IP.Equal(net.ParseIP("::1")) {
+		t.Errorf("peer[1].IP = %v", peers[1].IP)
+	}
+	if peers[1].Port != 8080 {
+		t.Errorf("peer[1].Port = %d", peers[1].Port)
+	}
+}
+
+func TestParseCompactPeers6Empty(t *testing.T) {
+	peers, err := parseCompactPeers6([]byte{})
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if len(peers) != 0 {
+		t.Errorf("got %d peers, want 0", len(peers))
+	}
+}
+
+func TestParseCompactPeers6BadLength(t *testing.T) {
+	_, err := parseCompactPeers6(make([]byte, 19)) // not a multiple of 18
+	if err == nil {
+		t.Error("expected error for bad length")
+	}
+}
+
+func TestParseResponse_Peers6(t *testing.T) {
+	// Build response with both IPv4 and IPv6 peers.
+	v4Data := make([]byte, 6)
+	v4Data[0], v4Data[1], v4Data[2], v4Data[3] = 192, 168, 1, 1
+	binary.BigEndian.PutUint16(v4Data[4:6], 6881)
+
+	v6Data := make([]byte, 18)
+	copy(v6Data[0:16], net.ParseIP("2001:db8::42").To16())
+	binary.BigEndian.PutUint16(v6Data[16:18], 7000)
+
+	d := bencode.Dict{
+		"interval": bencode.Int(900),
+		"peers":    bencode.String(v4Data),
+		"peers6":   bencode.String(v6Data),
+	}
+	r, err := parseResponse(bencode.Encode(d))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Peers) != 2 {
+		t.Fatalf("got %d peers, want 2 (1 v4 + 1 v6)", len(r.Peers))
+	}
+	if !r.Peers[0].IP.Equal(net.IPv4(192, 168, 1, 1)) {
+		t.Errorf("v4 peer IP = %v", r.Peers[0].IP)
+	}
+	if !r.Peers[1].IP.Equal(net.ParseIP("2001:db8::42")) {
+		t.Errorf("v6 peer IP = %v", r.Peers[1].IP)
+	}
+	if r.Peers[1].Port != 7000 {
+		t.Errorf("v6 peer port = %d", r.Peers[1].Port)
+	}
+}
+
+func TestParseResponse_Peers6Only(t *testing.T) {
+	v6Data := make([]byte, 18)
+	copy(v6Data[0:16], net.ParseIP("fe80::1").To16())
+	binary.BigEndian.PutUint16(v6Data[16:18], 9999)
+
+	d := bencode.Dict{
+		"interval": bencode.Int(900),
+		"peers":    bencode.String(""),
+		"peers6":   bencode.String(v6Data),
+	}
+	r, err := parseResponse(bencode.Encode(d))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Peers) != 1 {
+		t.Fatalf("got %d peers, want 1", len(r.Peers))
+	}
+	if !r.Peers[0].IP.Equal(net.ParseIP("fe80::1")) {
+		t.Errorf("IP = %v, want fe80::1", r.Peers[0].IP)
+	}
+}
+
+func TestParseResponse_Peers6BadLength(t *testing.T) {
+	d := bencode.Dict{
+		"interval": bencode.Int(900),
+		"peers":    bencode.String(""),
+		"peers6":   bencode.String(make([]byte, 19)),
+	}
+	_, err := parseResponse(bencode.Encode(d))
+	if err == nil {
+		t.Error("expected error for malformed peers6")
+	}
+}
+
+func TestPeerAddrIPv6(t *testing.T) {
+	p := Peer{IP: net.ParseIP("2001:db8::1"), Port: 6881}
+	want := "[2001:db8::1]:6881"
+	if got := p.Addr(); got != want {
+		t.Errorf("Addr() = %q, want %q", got, want)
+	}
+}
+
+func TestPeerStringIPv6(t *testing.T) {
+	p := Peer{IP: net.ParseIP("::1"), Port: 8080}
+	want := "[::1]:8080"
+	if got := p.String(); got != want {
+		t.Errorf("String() = %q, want %q", got, want)
+	}
+}
+
+func TestAnnounceHTTP_Peers6(t *testing.T) {
+	v6Data := make([]byte, 18)
+	copy(v6Data[0:16], net.ParseIP("2001:db8::99").To16())
+	binary.BigEndian.PutUint16(v6Data[16:18], 5555)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := bencode.Dict{
+			"interval": bencode.Int(900),
+			"peers":    bencode.String(""),
+			"peers6":   bencode.String(v6Data),
+		}
+		w.Write(bencode.Encode(resp))
+	}))
+	defer server.Close()
+
+	resp, err := Announce(server.URL+"/announce", AnnounceParams{
+		InfoHash: [20]byte{1},
+		PeerID:   [20]byte{2},
+		Port:     6881,
+	})
+	if err != nil {
+		t.Fatalf("Announce error: %v", err)
+	}
+	if len(resp.Peers) != 1 {
+		t.Fatalf("got %d peers, want 1", len(resp.Peers))
+	}
+	if !resp.Peers[0].IP.Equal(net.ParseIP("2001:db8::99")) {
+		t.Errorf("peer IP = %v", resp.Peers[0].IP)
+	}
+	if resp.Peers[0].Port != 5555 {
+		t.Errorf("peer port = %d", resp.Peers[0].Port)
+	}
+}

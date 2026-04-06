@@ -32,7 +32,7 @@ type Peer struct {
 }
 
 func (p Peer) String() string {
-	return fmt.Sprintf("%s:%d", p.IP, p.Port)
+	return net.JoinHostPort(p.IP.String(), strconv.Itoa(int(p.Port)))
 }
 
 // Addr returns the peer as a TCP address string.
@@ -222,10 +222,23 @@ func parseResponse(data []byte) (*Response, error) {
 		return nil, fmt.Errorf("unexpected type for 'peers': %T", peersVal)
 	}
 
+	// BEP 7: IPv6 peers in compact format (18 bytes each).
+	if peers6Val, ok := d["peers6"]; ok {
+		if s, ok := peers6Val.(bencode.String); ok {
+			v6, err := parseCompactPeers6([]byte(s))
+			if err != nil {
+				return nil, fmt.Errorf("parse compact peers6: %w", err)
+			}
+			r.Peers = append(r.Peers, v6...)
+		}
+	}
+
 	return r, nil
 }
 
 const peerCompactLen = 6 // 4 bytes IP + 2 bytes port
+
+const peer6CompactLen = 18 // 16 bytes IPv6 + 2 bytes port
 
 // parseCompactPeers parses the compact peer format (BEP 23).
 // Each peer is 6 bytes: 4 for IPv4 address + 2 for port, both big-endian.
@@ -245,6 +258,29 @@ func parseCompactPeers(data []byte) ([]Peer, error) {
 		peers[i] = Peer{
 			IP:   ip,
 			Port: binary.BigEndian.Uint16(data[offset+4 : offset+6]),
+		}
+	}
+
+	return peers, nil
+}
+
+// parseCompactPeers6 parses the BEP 7 compact IPv6 peer format.
+// Each peer is 18 bytes: 16 for IPv6 address + 2 for port, both big-endian.
+func parseCompactPeers6(data []byte) ([]Peer, error) {
+	if len(data)%peer6CompactLen != 0 {
+		return nil, fmt.Errorf("compact peers6 length %d not a multiple of %d", len(data), peer6CompactLen)
+	}
+
+	numPeers := len(data) / peer6CompactLen
+	peers := make([]Peer, numPeers)
+
+	for i := range numPeers {
+		offset := i * peer6CompactLen
+		ip := make(net.IP, net.IPv6len)
+		copy(ip, data[offset:offset+16])
+		peers[i] = Peer{
+			IP:   ip,
+			Port: binary.BigEndian.Uint16(data[offset+16 : offset+18]),
 		}
 	}
 
