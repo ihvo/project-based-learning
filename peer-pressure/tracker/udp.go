@@ -178,11 +178,8 @@ func udpRoundTrip(conn *net.UDPConn, req []byte, minResp int) ([]byte, error) {
 	buf := make([]byte, 4096) // plenty for any tracker response
 
 	for n := range maxRetries {
-		// Start at 2s, double each retry: 2s, 4s, 8s, 16s.
-		timeout := 2 * time.Second * (1 << n)
-		if timeout > maxTimeout {
-			timeout = maxTimeout
-		}
+		// Linear backoff: 2s, 3s, 4s, 5s.
+		timeout := time.Duration(2+n) * time.Second
 
 		if _, err := conn.Write(req); err != nil {
 			return nil, fmt.Errorf("send: %w", err)
