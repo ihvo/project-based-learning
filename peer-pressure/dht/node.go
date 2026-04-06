@@ -258,9 +258,24 @@ func (d *DHT) sendGetPeers(n Node, infoHash [20]byte) (struct {
 		}
 	}
 
+	// BEP 32: IPv6 peers in values6 key.
+	if values6, ok := resp.Reply["values6"].(bencode.List); ok {
+		for _, v := range values6 {
+			if s, ok := v.(bencode.String); ok {
+				for _, p := range DecodeCompactPeers6([]byte(s)) {
+					r.peers = append(r.peers, p)
+				}
+			}
+		}
+	}
+
 	// Closer nodes.
 	if nodesStr, ok := resp.Reply["nodes"].(bencode.String); ok {
-		r.nodes = DecodeCompactNodes([]byte(nodesStr))
+		r.nodes = append(r.nodes, DecodeCompactNodes([]byte(nodesStr))...)
+	}
+	// BEP 32: IPv6 closer nodes.
+	if nodes6Str, ok := resp.Reply["nodes6"].(bencode.String); ok {
+		r.nodes = append(r.nodes, DecodeCompactNodes6([]byte(nodes6Str))...)
 	}
 
 	return r, nil
@@ -368,12 +383,19 @@ func (d *DHT) sendFindNode(n Node, target NodeID) ([]Node, error) {
 		return nil, fmt.Errorf("find_node error: %v", resp.Error)
 	}
 
-	nodesStr, ok := resp.Reply["nodes"].(bencode.String)
-	if !ok {
-		return nil, fmt.Errorf("find_node: missing nodes in response")
+	var nodes []Node
+	if nodesStr, ok := resp.Reply["nodes"].(bencode.String); ok {
+		nodes = append(nodes, DecodeCompactNodes([]byte(nodesStr))...)
+	}
+	// BEP 32: IPv6 nodes in nodes6 key.
+	if nodes6Str, ok := resp.Reply["nodes6"].(bencode.String); ok {
+		nodes = append(nodes, DecodeCompactNodes6([]byte(nodes6Str))...)
+	}
+	if len(nodes) == 0 {
+		return nil, fmt.Errorf("find_node: no nodes in response")
 	}
 
-	return DecodeCompactNodes([]byte(nodesStr)), nil
+	return nodes, nil
 }
 
 // sortByDistance sorts nodes by XOR distance to target (ascending).
@@ -559,6 +581,53 @@ func DecodeCompactPeers(data []byte) []string {
 		port := binary.BigEndian.Uint16(data[4:6])
 		addrs = append(addrs, fmt.Sprintf("%s:%d", ip, port))
 		data = data[6:]
+	}
+	return addrs
+}
+
+// EncodeCompactNodes6 encodes nodes into the BEP 32 IPv6 compact format.
+// Each node: 20-byte ID + 16-byte IPv6 + 2-byte port = 38 bytes.
+func EncodeCompactNodes6(nodes []Node) []byte {
+	buf := make([]byte, 38*len(nodes))
+	for i, n := range nodes {
+		off := i * 38
+		copy(buf[off:], n.ID[:])
+		ip6 := n.Addr.IP.To16()
+		if ip6 != nil {
+			copy(buf[off+20:], ip6)
+		}
+		binary.BigEndian.PutUint16(buf[off+36:], uint16(n.Addr.Port))
+	}
+	return buf
+}
+
+// DecodeCompactNodes6 parses the BEP 32 IPv6 compact node format (38 bytes per node).
+func DecodeCompactNodes6(data []byte) []Node {
+	var nodes []Node
+	for len(data) >= 38 {
+		var id NodeID
+		copy(id[:], data[:20])
+		ip := make(net.IP, net.IPv6len)
+		copy(ip, data[20:36])
+		port := binary.BigEndian.Uint16(data[36:38])
+		nodes = append(nodes, Node{
+			ID:   id,
+			Addr: net.UDPAddr{IP: ip, Port: int(port)},
+		})
+		data = data[38:]
+	}
+	return nodes
+}
+
+// DecodeCompactPeers6 parses the BEP 32 IPv6 compact peer format (18 bytes per peer).
+func DecodeCompactPeers6(data []byte) []string {
+	var addrs []string
+	for len(data) >= 18 {
+		ip := make(net.IP, net.IPv6len)
+		copy(ip, data[:16])
+		port := binary.BigEndian.Uint16(data[16:18])
+		addrs = append(addrs, net.JoinHostPort(ip.String(), fmt.Sprintf("%d", port)))
+		data = data[18:]
 	}
 	return addrs
 }

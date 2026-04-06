@@ -561,3 +561,90 @@ func TestRandomIDInBucket(t *testing.T) {
 		}
 	}
 }
+
+// --- BEP 32: IPv6 compact encoding/decoding ---
+
+func TestEncodeDecodeCompactNodes6(t *testing.T) {
+	nodes := []Node{
+		{ID: NodeID{1}, Addr: net.UDPAddr{IP: net.ParseIP("2001:db8::1"), Port: 6881}},
+		{ID: NodeID{2}, Addr: net.UDPAddr{IP: net.ParseIP("::1"), Port: 8080}},
+	}
+
+	encoded := EncodeCompactNodes6(nodes)
+	if len(encoded) != 76 { // 2 × 38
+		t.Fatalf("encoded length = %d, want 76", len(encoded))
+	}
+
+	decoded := DecodeCompactNodes6(encoded)
+	if len(decoded) != 2 {
+		t.Fatalf("decoded %d nodes, want 2", len(decoded))
+	}
+
+	if decoded[0].ID != nodes[0].ID {
+		t.Errorf("node[0].ID = %x, want %x", decoded[0].ID, nodes[0].ID)
+	}
+	if !decoded[0].Addr.IP.Equal(net.ParseIP("2001:db8::1")) {
+		t.Errorf("node[0].IP = %v", decoded[0].Addr.IP)
+	}
+	if decoded[0].Addr.Port != 6881 {
+		t.Errorf("node[0].Port = %d", decoded[0].Addr.Port)
+	}
+	if !decoded[1].Addr.IP.Equal(net.ParseIP("::1")) {
+		t.Errorf("node[1].IP = %v", decoded[1].Addr.IP)
+	}
+	if decoded[1].Addr.Port != 8080 {
+		t.Errorf("node[1].Port = %d", decoded[1].Addr.Port)
+	}
+}
+
+func TestDecodeCompactNodes6Empty(t *testing.T) {
+	nodes := DecodeCompactNodes6([]byte{})
+	if len(nodes) != 0 {
+		t.Errorf("got %d nodes, want 0", len(nodes))
+	}
+}
+
+func TestDecodeCompactNodes6Short(t *testing.T) {
+	// Less than 38 bytes → no nodes decoded (graceful).
+	nodes := DecodeCompactNodes6(make([]byte, 37))
+	if len(nodes) != 0 {
+		t.Errorf("got %d nodes from 37 bytes", len(nodes))
+	}
+}
+
+func TestDecodeCompactPeers6(t *testing.T) {
+	// Two IPv6 peers.
+	data := make([]byte, 36)
+	copy(data[0:16], net.ParseIP("2001:db8::42").To16())
+	data[16] = 0x1A
+	data[17] = 0xE1 // port 6881
+	copy(data[18:34], net.ParseIP("fe80::1").To16())
+	data[34] = 0x1F
+	data[35] = 0x90 // port 8080
+
+	addrs := DecodeCompactPeers6(data)
+	if len(addrs) != 2 {
+		t.Fatalf("got %d peers, want 2", len(addrs))
+	}
+	// JoinHostPort adds brackets for IPv6.
+	if addrs[0] != "[2001:db8::42]:6881" {
+		t.Errorf("peer[0] = %q", addrs[0])
+	}
+	if addrs[1] != "[fe80::1]:8080" {
+		t.Errorf("peer[1] = %q", addrs[1])
+	}
+}
+
+func TestDecodeCompactPeers6Empty(t *testing.T) {
+	addrs := DecodeCompactPeers6([]byte{})
+	if len(addrs) != 0 {
+		t.Errorf("got %d peers, want 0", len(addrs))
+	}
+}
+
+func TestDecodeCompactPeers6Short(t *testing.T) {
+	addrs := DecodeCompactPeers6(make([]byte, 17))
+	if len(addrs) != 0 {
+		t.Errorf("got %d peers from 17 bytes", len(addrs))
+	}
+}
