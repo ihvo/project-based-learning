@@ -165,6 +165,13 @@ func pipelinedDownload(conn *peer.Conn, addr string, t *torrent.Torrent,
 
 			// Piece complete?
 			if j.received == j.numBlocks {
+				// In endgame mode, another worker may have finished
+				// this piece first — skip the duplicate.
+				if picker.IsDone(j.index) {
+					delete(active, j.index)
+					continue
+				}
+
 				actualHash := sha1.Sum(j.buf)
 				if actualHash != j.hash {
 					picker.Abort(j.index)

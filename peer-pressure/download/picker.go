@@ -20,6 +20,7 @@ type Picker struct {
 	frequency []int  // how many peers have each piece
 	done      []bool // verified pieces
 	inflight  []bool // pieces currently being downloaded
+	endgame   bool   // true when endgame mode is active
 }
 
 // NewPicker creates a picker for a torrent with numPieces pieces.
@@ -60,6 +61,9 @@ func (p *Picker) RemovePeer(bitfield []byte) {
 //
 // When multiple pieces tie for rarest, one is chosen at random to avoid all
 // workers requesting the same piece from different peers.
+//
+// In endgame mode, inflight pieces are eligible for duplicate assignment.
+// The second return value is true for a normal pick or an endgame duplicate.
 func (p *Picker) Pick(peerBitfield []byte) (int, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -68,7 +72,10 @@ func (p *Picker) Pick(peerBitfield []byte) (int, bool) {
 	var candidates []int
 
 	for i := range p.numPieces {
-		if p.done[i] || p.inflight[i] {
+		if p.done[i] {
+			continue
+		}
+		if p.inflight[i] && !p.endgame {
 			continue
 		}
 		if !hasPiece(peerBitfield, i) {
@@ -85,6 +92,12 @@ func (p *Picker) Pick(peerBitfield []byte) (int, bool) {
 	}
 
 	if len(candidates) == 0 {
+		// Check if we should enter endgame mode: all remaining pieces
+		// are inflight and we haven't entered endgame yet.
+		if !p.endgame && p.shouldEnterEndgame() {
+			p.endgame = true
+			return p.pickEndgame(peerBitfield)
+		}
 		return -1, false
 	}
 
@@ -93,12 +106,62 @@ func (p *Picker) Pick(peerBitfield []byte) (int, bool) {
 	return choice, true
 }
 
+// pickEndgame is called once right after entering endgame mode. It picks
+// a duplicate inflight piece this peer has. Caller must hold p.mu.
+func (p *Picker) pickEndgame(peerBitfield []byte) (int, bool) {
+	var candidates []int
+	for i := range p.numPieces {
+		if p.done[i] || !p.inflight[i] {
+			continue
+		}
+		if !hasPiece(peerBitfield, i) {
+			continue
+		}
+		candidates = append(candidates, i)
+	}
+	if len(candidates) == 0 {
+		return -1, false
+	}
+	return candidates[rand.IntN(len(candidates))], true
+}
+
+// shouldEnterEndgame checks if all remaining pieces are already inflight.
+// Caller must hold p.mu.
+func (p *Picker) shouldEnterEndgame() bool {
+	for i := range p.numPieces {
+		if !p.done[i] && !p.inflight[i] {
+			return false
+		}
+	}
+	// At least one piece must still be needed.
+	for _, d := range p.done {
+		if !d {
+			return true
+		}
+	}
+	return false
+}
+
+// Endgame reports whether the picker is in endgame mode.
+func (p *Picker) Endgame() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.endgame
+}
+
 // Finish marks a piece as successfully downloaded and verified.
 func (p *Picker) Finish(index int) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.done[index] = true
 	p.inflight[index] = false
+}
+
+// IsDone reports whether a specific piece has been completed.
+func (p *Picker) IsDone(index int) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.done[index]
 }
 
 // Abort marks a piece as no longer in-flight (download failed).

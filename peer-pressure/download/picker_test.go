@@ -140,3 +140,92 @@ func TestPickerRemovePeer(t *testing.T) {
 		t.Fatalf("remaining = %d, want 2", p.Remaining())
 	}
 }
+
+// --- Endgame mode tests ---
+
+func TestEndgameTriggered(t *testing.T) {
+	p := NewPicker(4)
+	bf := MakeBitfield(4, []int{0, 1, 2, 3})
+	p.AddPeer(bf)
+
+	// Pick all 4 pieces — all now inflight.
+	for range 4 {
+		_, ok := p.Pick(bf)
+		if !ok {
+			t.Fatal("expected piece to be available")
+		}
+	}
+
+	// Finish 3, leaving 1 inflight. Now: 3 done, 1 inflight, 0 idle.
+	p.Finish(0)
+	p.Finish(1)
+	p.Finish(2)
+
+	// Next pick should enter endgame and return the inflight piece.
+	idx, ok := p.Pick(bf)
+	if !ok {
+		t.Fatal("expected endgame pick")
+	}
+	if idx != 3 {
+		t.Errorf("endgame pick = %d, want 3", idx)
+	}
+	if !p.Endgame() {
+		t.Error("expected picker to be in endgame mode")
+	}
+}
+
+func TestEndgameNotTriggeredWhenIdlePiecesExist(t *testing.T) {
+	p := NewPicker(4)
+	bf := MakeBitfield(4, []int{0, 1, 2, 3})
+	p.AddPeer(bf)
+
+	// Pick 2 — 2 inflight, 2 idle.
+	p.Pick(bf)
+	p.Pick(bf)
+
+	if p.Endgame() {
+		t.Error("should not be in endgame with idle pieces remaining")
+	}
+}
+
+func TestEndgameDuplicatePick(t *testing.T) {
+	p := NewPicker(2)
+	bf := MakeBitfield(2, []int{0, 1})
+	p.AddPeer(bf)
+
+	// Pick both — both inflight, none idle.
+	p.Pick(bf)
+	p.Pick(bf)
+
+	// Next pick should trigger endgame and return a duplicate.
+	idx, ok := p.Pick(bf)
+	if !ok {
+		t.Fatal("expected endgame duplicate pick")
+	}
+	if idx != 0 && idx != 1 {
+		t.Errorf("endgame pick = %d, want 0 or 1", idx)
+	}
+}
+
+func TestEndgameFinishClearsDuplicate(t *testing.T) {
+	p := NewPicker(2)
+	bf := MakeBitfield(2, []int{0, 1})
+	p.AddPeer(bf)
+
+	// Force endgame: pick all, then get a duplicate.
+	p.Pick(bf)
+	p.Pick(bf)
+	p.Pick(bf) // triggers endgame
+
+	// Finish piece 0 — should not be picked again.
+	p.Finish(0)
+
+	// In endgame mode, should only get piece 1.
+	idx, ok := p.Pick(bf)
+	if !ok {
+		t.Fatal("expected pick for remaining piece")
+	}
+	if idx != 1 {
+		t.Errorf("pick = %d, want 1 (piece 0 is done)", idx)
+	}
+}
