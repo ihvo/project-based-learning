@@ -10,6 +10,7 @@ package download
 import (
 	"crypto/sha1"
 	"fmt"
+	"time"
 
 	"github.com/ihvo/peer-pressure/peer"
 )
@@ -22,7 +23,7 @@ const BlockSize = 16384 // 16 KiB — standard block size per convention
 // the interested/unchoke negotiation, sends block requests, reassembles the
 // piece, and verifies its SHA-1 hash.
 func Piece(conn *peer.Conn, pieceIndex int, pieceLength int, expectedHash [20]byte) ([]byte, error) {
-	if _, err := NegotiateUnchoke(conn); err != nil {
+	if _, err := NegotiateUnchoke(conn, 0); err != nil {
 		return nil, fmt.Errorf("negotiate unchoke: %w", err)
 	}
 	return DownloadAndVerify(conn, pieceIndex, pieceLength, expectedHash, nil)
@@ -51,11 +52,18 @@ func DownloadAndVerify(conn *peer.Conn, pieceIndex, pieceLength int, expectedHas
 }
 
 // NegotiateUnchoke sends interested and reads messages until we receive unchoke.
-// Discards bitfield and have messages received during negotiation.
+// numPieces is needed to synthesize a bitfield when the peer sends HaveAll
+// (BEP 6) or unchokes without any availability info.
+//
 // The write is done in a goroutine to avoid deadlocking on unbuffered
 // transports (like net.Pipe) where the peer may also be writing.
-// Returns the bitfield if one was received, or nil.
-func NegotiateUnchoke(conn *peer.Conn) (bitfield []byte, err error) {
+//
+// Returns the peer's bitfield. If the peer didn't send a Bitfield or HaveAll,
+// we assume it has all pieces (a peer wouldn't unchoke us with nothing to offer).
+func NegotiateUnchoke(conn *peer.Conn, numPieces int) (bitfield []byte, err error) {
+	// Give the peer 30 seconds to unchoke us.
+	conn.SetDeadline(time.Now().Add(30 * time.Second))
+
 	writeErr := make(chan error, 1)
 	go func() {
 		writeErr <- conn.WriteMessage(peer.NewInterested())
@@ -75,17 +83,58 @@ func NegotiateUnchoke(conn *peer.Conn) (bitfield []byte, err error) {
 			if err := <-writeErr; err != nil {
 				return nil, fmt.Errorf("send interested: %w", err)
 			}
+			if bitfield == nil {
+				// Peer unchoked us without telling us what it has.
+				// Assume it has everything — if a specific request fails,
+				// the download loop will handle it per-piece.
+				bitfield = makeFullBitfield(numPieces)
+			}
+			conn.SetDeadline(time.Time{}) // clear for subsequent I/O
 			return bitfield, nil
+
 		case peer.MsgBitfield:
 			bitfield = msg.Payload
-		case peer.MsgHave:
-			continue // expected during negotiation
-		case peer.MsgChoke:
-			return nil, fmt.Errorf("peer choked us")
+
+		case peer.MsgHaveAll:
+			// BEP 6: peer has every piece.
+			bitfield = makeFullBitfield(numPieces)
+
+		case peer.MsgHaveNone:
+			// BEP 6: peer has nothing. Leave bitfield nil — will be
+			// overridden to "all" at unchoke since we can't know better.
+			bitfield = nil
+
+		case peer.MsgHave, peer.MsgChoke:
+			if msg.ID == peer.MsgChoke {
+				return nil, fmt.Errorf("peer choked us")
+			}
+			continue
+
 		default:
 			continue
 		}
 	}
+}
+
+// makeFullBitfield creates a bitfield with all numPieces bits set to 1.
+// The last byte may have trailing zero bits if numPieces isn't a multiple of 8.
+func makeFullBitfield(numPieces int) []byte {
+	if numPieces <= 0 {
+		return nil
+	}
+	numBytes := (numPieces + 7) / 8
+	bf := make([]byte, numBytes)
+	// Fill all bytes with 0xFF (all bits set)
+	for i := range bf {
+		bf[i] = 0xFF
+	}
+	// Clear the trailing bits in the last byte that don't correspond to real pieces.
+	// E.g. if numPieces=10, last byte should be 0b11000000 (bits 8,9 set, 10-15 cleared).
+	spare := numBytes*8 - numPieces
+	if spare > 0 {
+		bf[numBytes-1] = 0xFF << spare
+	}
+	return bf
 }
 
 // downloadBlocks requests and collects all blocks for a piece.
@@ -99,6 +148,10 @@ func downloadBlocks(conn *peer.Conn, pieceIndex, pieceLength int, onBlock BlockC
 	if pieceLength%BlockSize != 0 {
 		numBlocks++
 	}
+
+	// Allow 30 seconds per piece for data transfer.
+	conn.SetDeadline(time.Now().Add(30 * time.Second))
+	defer conn.SetDeadline(time.Time{})
 
 	// Send all requests concurrently
 	requestErr := make(chan error, 1)

@@ -143,17 +143,47 @@ func File(ctx context.Context, cfg Config) error {
 
 // worker runs the download loop for a single peer connection.
 // It connects, handshakes, negotiates unchoke, then loops: pick → download → report.
+// On connection errors, it reconnects and retries — connections dropping is normal
+// in BitTorrent (peers come and go, seeders rate-limit, networks hiccup).
 func worker(ctx context.Context, addr string, peerID [20]byte, t *torrent.Torrent, picker *Picker, results chan<- pieceResult, prog *Progress) {
+	const maxRetries = 5
+	retries := 0
+
+	for retries < maxRetries {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		downloaded := workerSession(ctx, addr, peerID, t, picker, results, prog)
+		if downloaded > 0 {
+			retries = 0 // reset on progress
+		} else {
+			retries++
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(time.Duration(retries) * time.Second):
+			// brief backoff before reconnecting
+		}
+	}
+}
+
+// workerSession handles a single connection lifecycle: connect → download pieces
+// until error or no more work. Returns the number of pieces successfully downloaded.
+func workerSession(ctx context.Context, addr string, peerID [20]byte, t *torrent.Torrent, picker *Picker, results chan<- pieceResult, prog *Progress) int {
 	conn, err := peer.Dial(addr, t.InfoHash, peerID)
 	if err != nil {
-		return
+		return 0
 	}
 	defer conn.Close()
 
-	// Negotiate unchoke (also receives bitfield)
-	bitfield, err := NegotiateUnchoke(conn)
+	bitfield, err := NegotiateUnchoke(conn, len(t.Pieces))
 	if err != nil {
-		return
+		return 0
 	}
 
 	picker.AddPeer(bitfield)
@@ -164,16 +194,17 @@ func worker(ctx context.Context, addr string, peerID [20]byte, t *torrent.Torren
 		defer prog.PeerDisconnected(addr)
 	}
 
+	downloaded := 0
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return downloaded
 		default:
 		}
 
 		idx, ok := picker.Pick(bitfield)
 		if !ok {
-			return // no more pieces this peer can provide
+			return downloaded // no more pieces this peer can provide
 		}
 
 		if prog != nil {
@@ -194,10 +225,11 @@ func worker(ctx context.Context, addr string, peerID [20]byte, t *torrent.Torren
 		if err != nil {
 			picker.Abort(idx)
 			results <- pieceResult{index: idx, err: fmt.Errorf("peer %s: %w", addr, err)}
-			return
+			return downloaded // connection likely dead, let worker reconnect
 		}
 
 		picker.Finish(idx)
 		results <- pieceResult{index: idx, data: data, fromAddr: addr}
+		downloaded++
 	}
 }

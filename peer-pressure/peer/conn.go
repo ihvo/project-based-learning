@@ -48,6 +48,10 @@ func FromConn(conn net.Conn, infoHash, peerID [20]byte) (*Conn, error) {
 func doHandshake(conn net.Conn, infoHash, peerID [20]byte) (*Conn, error) {
 	hs := &Handshake{InfoHash: infoHash, PeerID: peerID}
 
+	// Set a generous deadline for the handshake exchange.
+	conn.SetDeadline(time.Now().Add(10 * time.Second))
+	defer conn.SetDeadline(time.Time{}) // clear after handshake
+
 	// Write and read concurrently. This is necessary because net.Pipe (and
 	// similar unbuffered transports) will deadlock if both sides write before
 	// either reads. With real TCP sockets the kernel buffer absorbs the 68-byte
@@ -76,6 +80,11 @@ func doHandshake(conn net.Conn, infoHash, peerID [20]byte) (*Conn, error) {
 		PeerID:   peerHS.PeerID,
 		InfoHash: peerHS.InfoHash,
 	}, nil
+}
+
+// SetDeadline sets a read+write deadline on the underlying connection.
+func (c *Conn) SetDeadline(d time.Time) error {
+	return c.conn.SetDeadline(d)
 }
 
 // ReadMessage reads the next message from the peer. Returns nil for keep-alive.

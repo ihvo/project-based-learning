@@ -30,6 +30,11 @@ const (
 	MsgRequest       uint8 = 6
 	MsgPiece         uint8 = 7
 	MsgCancel        uint8 = 8
+
+	// BEP 6 — Fast Extension. We only handle HaveAll/HaveNone for now
+	// because real-world seeders send these instead of a full bitfield.
+	MsgHaveAll  uint8 = 14
+	MsgHaveNone uint8 = 15
 )
 
 // --- Handshake ---
