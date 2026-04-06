@@ -1,13 +1,13 @@
-// Package tracker implements the BitTorrent HTTP tracker protocol (BEP 3).
+// Package tracker implements BitTorrent tracker protocols (BEP 3, BEP 15).
 //
-// A tracker is an HTTP service that helps peers find each other. Clients send
+// A tracker is a service that helps peers find each other. Clients send
 // an "announce" request with their info_hash, peer_id, and stats. The tracker
 // responds with a list of peers in the swarm.
 //
-// This package supports the compact peer format (BEP 23), which encodes each
-// peer as 6 bytes (4 for IPv4 + 2 for port).
+// Announce() auto-detects the URL scheme and dispatches to HTTP or UDP.
 //
 // Reference: https://www.bittorrent.org/beps/bep_0003.html
+// Reference: https://www.bittorrent.org/beps/bep_0015.html
 // Reference: https://www.bittorrent.org/beps/bep_0023.html
 package tracker
 
@@ -60,8 +60,17 @@ type AnnounceParams struct {
 	NumWant    int      // number of peers requested (0 = tracker default)
 }
 
-// Announce sends an HTTP announce request to the tracker and returns the response.
+// Announce sends an announce request to the tracker and returns the response.
+// Automatically dispatches to HTTP or UDP based on the URL scheme.
 func Announce(trackerURL string, params AnnounceParams) (*Response, error) {
+	if strings.HasPrefix(trackerURL, "udp://") {
+		return announceUDP(trackerURL, params)
+	}
+	return announceHTTP(trackerURL, params)
+}
+
+// announceHTTP sends an HTTP announce request to the tracker.
+func announceHTTP(trackerURL string, params AnnounceParams) (*Response, error) {
 	reqURL, err := buildAnnounceURL(trackerURL, params)
 	if err != nil {
 		return nil, fmt.Errorf("build announce URL: %w", err)
