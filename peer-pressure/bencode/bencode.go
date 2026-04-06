@@ -182,6 +182,18 @@ func DecodeDictRaw(data []byte) (map[string]RawValue, error) {
 // decodeValue parses one value from the front of data, returning the value
 // and the remaining unconsumed bytes. This "return the rest" pattern lets us
 // recursively parse nested structures without tracking an index.
+// DecodeFirst parses the first bencoded value from data and returns it along
+// with the number of bytes consumed. Unlike Decode, it does not require the
+// entire input to be a single value — trailing data is allowed. This is needed
+// for BEP 9 metadata messages where a bencoded dict is followed by raw bytes.
+func DecodeFirst(data []byte) (Value, int, error) {
+	val, rest, err := decodeValue(data)
+	if err != nil {
+		return nil, 0, err
+	}
+	return val, len(data) - len(rest), nil
+}
+
 func decodeValue(data []byte) (Value, []byte, error) {
 	if len(data) == 0 {
 		return nil, nil, ErrUnexpectedEnd
