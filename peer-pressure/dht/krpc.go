@@ -157,7 +157,11 @@ func (t *Transport) Listen(handler func(msg Message, addr *net.UDPAddr)) {
 		if err != nil {
 			return // connection closed
 		}
-		msg, err := DecodeMessage(buf[:n])
+		// Copy before decode: bencode.String is []byte and aliases the input
+		// buffer, so reusing buf would corrupt previously decoded messages.
+		data := make([]byte, n)
+		copy(data, buf[:n])
+		msg, err := DecodeMessage(data)
 		if err != nil {
 			continue
 		}

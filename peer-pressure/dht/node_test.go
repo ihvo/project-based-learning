@@ -15,20 +15,43 @@ type mockDHTNode struct {
 	conn *net.UDPConn
 	// findNodeResponse is the compact nodes to return for find_node queries.
 	findNodeResponse []byte
+	// getPeersValues is a list of compact 6-byte peer strings for get_peers.
+	getPeersValues []string
+	// getPeersToken is the token to return for get_peers.
+	getPeersToken string
+	// announceReceived tracks announce_peer calls.
+	announceReceived []announceCall
+	announceMu       sync.Mutex
 	done             chan struct{}
 }
 
-func newMockDHTNode(t *testing.T, id NodeID, findNodeResp []byte) *mockDHTNode {
+type announceCall struct {
+	InfoHash [20]byte
+	Port     int
+	Token    string
+}
+
+type mockOpts struct {
+	findNodeResponse []byte
+	getPeersValues   []string
+	getPeersToken    string
+}
+
+func newMockDHTNode(t *testing.T, id NodeID, opts *mockOpts) *mockDHTNode {
 	t.Helper()
 	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {
 		t.Fatalf("listen mock: %v", err)
 	}
 	m := &mockDHTNode{
-		id:               id,
-		conn:             conn,
-		findNodeResponse: findNodeResp,
-		done:             make(chan struct{}),
+		id:   id,
+		conn: conn,
+		done: make(chan struct{}),
+	}
+	if opts != nil {
+		m.findNodeResponse = opts.findNodeResponse
+		m.getPeersToken = opts.getPeersToken
+		m.getPeersValues = opts.getPeersValues
 	}
 	go m.serve()
 	return m
@@ -46,7 +69,6 @@ func (m *mockDHTNode) serve() {
 		if err != nil {
 			continue
 		}
-
 		var resp Message
 		switch msg.Method {
 		case "ping":
@@ -63,6 +85,42 @@ func (m *mockDHTNode) serve() {
 					"id":    bencode.String(m.id[:]),
 					"nodes": bencode.String(m.findNodeResponse),
 				},
+			}
+		case "get_peers":
+			reply := bencode.Dict{
+				"id":    bencode.String(m.id[:]),
+				"token": bencode.String(m.getPeersToken),
+			}
+			if len(m.getPeersValues) > 0 {
+				vals := make(bencode.List, len(m.getPeersValues))
+				for i, v := range m.getPeersValues {
+					vals[i] = bencode.String(v)
+				}
+				reply["values"] = vals
+			} else {
+				reply["nodes"] = bencode.String(m.findNodeResponse)
+			}
+			resp = Message{TxnID: msg.TxnID, Type: "r", Reply: reply}
+		case "announce_peer":
+			var ih [20]byte
+			if s, ok := msg.Args["info_hash"].(bencode.String); ok {
+				copy(ih[:], s)
+			}
+			port := 0
+			if p, ok := msg.Args["port"].(bencode.Int); ok {
+				port = int(p)
+			}
+			tok := ""
+			if t, ok := msg.Args["token"].(bencode.String); ok {
+				tok = string(t)
+			}
+			m.announceMu.Lock()
+			m.announceReceived = append(m.announceReceived, announceCall{ih, port, tok})
+			m.announceMu.Unlock()
+			resp = Message{
+				TxnID: msg.TxnID,
+				Type:  "r",
+				Reply: bencode.Dict{"id": bencode.String(m.id[:])},
 			}
 		default:
 			continue
@@ -157,15 +215,19 @@ func TestFindNodeIterative(t *testing.T) {
 	defer nodeC.close()
 
 	nodeBID := NodeID{0x02}
-	nodeB := newMockDHTNode(t, nodeBID, EncodeCompactNodes([]Node{
-		{ID: nodeC.id, Addr: *nodeC.addr()},
-	}))
+	nodeB := newMockDHTNode(t, nodeBID, &mockOpts{
+		findNodeResponse: EncodeCompactNodes([]Node{
+			{ID: nodeC.id, Addr: *nodeC.addr()},
+		}),
+	})
 	defer nodeB.close()
 
 	nodeAID := NodeID{0x04}
-	nodeA := newMockDHTNode(t, nodeAID, EncodeCompactNodes([]Node{
-		{ID: nodeB.id, Addr: *nodeB.addr()},
-	}))
+	nodeA := newMockDHTNode(t, nodeAID, &mockOpts{
+		findNodeResponse: EncodeCompactNodes([]Node{
+			{ID: nodeB.id, Addr: *nodeB.addr()},
+		}),
+	})
 	defer nodeA.close()
 
 	conn, _ := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
@@ -250,5 +312,144 @@ func TestFindNodeConcurrency(t *testing.T) {
 	case <-done:
 	case <-time.After(15 * time.Second):
 		t.Fatal("concurrent FindNode timed out")
+	}
+}
+
+func TestGetPeers(t *testing.T) {
+	infoHash := [20]byte{0xAB, 0xCD}
+
+	// Mock node that returns peers for the info hash.
+	mock := newMockDHTNode(t, NodeID{0x10}, &mockOpts{
+		getPeersToken: "tok123",
+		getPeersValues: []string{
+			string(EncodeCompactPeers([]string{"10.0.0.1:6881"})),
+			string(EncodeCompactPeers([]string{"10.0.0.2:6882"})),
+		},
+	})
+	defer mock.close()
+
+	conn, _ := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	dht := New(conn)
+	defer dht.Transport.Close()
+	go dht.Transport.Listen(nil)
+
+	dht.Table.Insert(Node{ID: mock.id, Addr: *mock.addr()})
+
+	peers := dht.GetPeers(infoHash)
+	if len(peers) != 2 {
+		t.Fatalf("GetPeers: got %d peers, want 2", len(peers))
+	}
+
+	// Check that token was cached.
+	dht.tokensMu.Lock()
+	tok, ok := dht.tokens[mock.id]
+	dht.tokensMu.Unlock()
+	if !ok || tok != "tok123" {
+		t.Errorf("token not cached: got %q, ok=%v", tok, ok)
+	}
+}
+
+func TestGetPeersNoResults(t *testing.T) {
+	// Mock node returns nodes but no peers.
+	mock := newMockDHTNode(t, NodeID{0x10}, &mockOpts{getPeersToken: "tok"})
+	defer mock.close()
+
+	conn, _ := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	dht := New(conn)
+	defer dht.Transport.Close()
+	go dht.Transport.Listen(nil)
+
+	dht.Table.Insert(Node{ID: mock.id, Addr: *mock.addr()})
+
+	peers := dht.GetPeers([20]byte{0xFF})
+	if len(peers) != 0 {
+		t.Errorf("expected 0 peers, got %d", len(peers))
+	}
+}
+
+func TestAnnouncePeer(t *testing.T) {
+	infoHash := [20]byte{0xAB}
+	mock := newMockDHTNode(t, NodeID{0x10}, &mockOpts{
+		getPeersToken: "secret_token",
+		getPeersValues: []string{
+			string(EncodeCompactPeers([]string{"10.0.0.1:6881"})),
+		},
+	})
+	defer mock.close()
+
+	conn, _ := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	dht := New(conn)
+	defer dht.Transport.Close()
+	go dht.Transport.Listen(nil)
+
+	dht.Table.Insert(Node{ID: mock.id, Addr: *mock.addr()})
+
+	// First get_peers to cache the token.
+	dht.GetPeers(infoHash)
+
+	// Now announce.
+	err := dht.AnnouncePeer(infoHash, 6881)
+	if err != nil {
+		t.Fatalf("AnnouncePeer: %v", err)
+	}
+
+	// Give the mock a moment to process.
+	time.Sleep(100 * time.Millisecond)
+
+	mock.announceMu.Lock()
+	calls := mock.announceReceived
+	mock.announceMu.Unlock()
+
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 announce call, got %d", len(calls))
+	}
+	if calls[0].InfoHash != infoHash {
+		t.Errorf("announce info_hash mismatch")
+	}
+	if calls[0].Port != 6881 {
+		t.Errorf("announce port: got %d, want 6881", calls[0].Port)
+	}
+	if calls[0].Token != "secret_token" {
+		t.Errorf("announce token: got %q, want %q", calls[0].Token, "secret_token")
+	}
+}
+
+func TestTokenCaching(t *testing.T) {
+	// Two mock nodes with different tokens — all config at construction to avoid races.
+	mock1 := newMockDHTNode(t, NodeID{0x10}, &mockOpts{
+		getPeersToken:  "token_a",
+		getPeersValues: []string{string(EncodeCompactPeers([]string{"1.2.3.4:80"}))},
+	})
+	defer mock1.close()
+
+	mock2 := newMockDHTNode(t, NodeID{0x20}, &mockOpts{
+		getPeersToken:  "token_b",
+		getPeersValues: []string{string(EncodeCompactPeers([]string{"5.6.7.8:80"}))},
+	})
+	defer mock2.close()
+
+	conn, _ := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	dht := New(conn)
+	defer dht.Transport.Close()
+	go dht.Transport.Listen(nil)
+
+	dht.Table.Insert(Node{ID: mock1.id, Addr: *mock1.addr()})
+	dht.Table.Insert(Node{ID: mock2.id, Addr: *mock2.addr()})
+
+	dht.GetPeers([20]byte{0x15})
+
+	dht.tokensMu.Lock()
+	numTokens := len(dht.tokens)
+	tokenSet := make(map[string]bool)
+	for _, tok := range dht.tokens {
+		tokenSet[tok] = true
+	}
+	dht.tokensMu.Unlock()
+
+	if numTokens < 2 {
+		t.Errorf("expected 2 cached tokens, got %d", numTokens)
+	}
+	if !tokenSet["token_a"] || !tokenSet["token_b"] {
+		t.Errorf("expected tokens {token_a, token_b}, got %v", tokenSet)
 	}
 }

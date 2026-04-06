@@ -20,6 +20,8 @@ type DHT struct {
 	ID        NodeID
 	Table     *RoutingTable
 	Transport *Transport
+	tokens    map[NodeID]string // cached tokens from get_peers responses
+	tokensMu  sync.Mutex
 }
 
 // New creates a DHT node bound to the given UDP connection.
@@ -29,6 +31,7 @@ func New(conn *net.UDPConn) *DHT {
 		ID:        id,
 		Table:     NewRoutingTable(id),
 		Transport: NewTransport(conn),
+		tokens:    make(map[NodeID]string),
 	}
 }
 
@@ -65,8 +68,196 @@ func (d *DHT) FindNode(target NodeID) []Node {
 	return d.iterativeLookup(target, false)
 }
 
+// GetPeers performs an iterative get_peers lookup for the given info hash.
+// Returns peer addresses (ip:port strings) discovered from the DHT.
+func (d *DHT) GetPeers(infoHash [20]byte) []string {
+	target := NodeID(infoHash)
+
+	seeds := d.Table.Closest(target, alpha)
+	if len(seeds) == 0 {
+		return nil
+	}
+
+	type queryResult struct {
+		from  Node
+		nodes []Node
+		peers []string
+		token string
+	}
+
+	queried := make(map[NodeID]bool)
+	queried[d.ID] = true
+
+	shortlist := make(map[NodeID]Node)
+	for _, n := range seeds {
+		shortlist[n.ID] = n
+	}
+
+	seen := make(map[string]bool)
+	var allPeers []string
+
+	for {
+		var candidates []Node
+		for _, n := range shortlist {
+			if !queried[n.ID] {
+				candidates = append(candidates, n)
+			}
+		}
+		if len(candidates) == 0 {
+			break
+		}
+
+		sortByDistance(candidates, target)
+		if len(candidates) > alpha {
+			candidates = candidates[:alpha]
+		}
+
+		results := make(chan queryResult, len(candidates))
+		var wg sync.WaitGroup
+		for _, c := range candidates {
+			queried[c.ID] = true
+			wg.Add(1)
+			go func(n Node) {
+				defer wg.Done()
+				r, err := d.sendGetPeers(n, infoHash)
+				if err != nil {
+					return
+				}
+				results <- r
+			}(c)
+		}
+		go func() { wg.Wait(); close(results) }()
+
+		added := false
+		for r := range results {
+			d.Table.Insert(r.from)
+
+			if r.token != "" {
+				d.tokensMu.Lock()
+				d.tokens[r.from.ID] = r.token
+				d.tokensMu.Unlock()
+			}
+
+			for _, p := range r.peers {
+				if !seen[p] {
+					seen[p] = true
+					allPeers = append(allPeers, p)
+				}
+			}
+
+			for _, n := range r.nodes {
+				if _, exists := shortlist[n.ID]; !exists {
+					shortlist[n.ID] = n
+					d.Table.Insert(n)
+					added = true
+				}
+			}
+		}
+
+		if !added && len(allPeers) > 0 {
+			break // found peers, no new closer nodes
+		}
+		if !added {
+			break
+		}
+	}
+
+	return allPeers
+}
+
+// AnnouncePeer announces to DHT nodes that we are a peer for the given info hash.
+// Uses tokens cached from previous GetPeers calls.
+func (d *DHT) AnnouncePeer(infoHash [20]byte, port int) error {
+	target := NodeID(infoHash)
+	closest := d.Table.Closest(target, bucketSize)
+
+	var announced int
+	for _, n := range closest {
+		d.tokensMu.Lock()
+		token, ok := d.tokens[n.ID]
+		d.tokensMu.Unlock()
+		if !ok {
+			continue
+		}
+
+		_, err := d.Transport.Send(&n.Addr, Message{
+			Type:   "q",
+			Method: "announce_peer",
+			Args: bencode.Dict{
+				"id":        bencode.String(d.ID[:]),
+				"info_hash": bencode.String(infoHash[:]),
+				"port":      bencode.Int(port),
+				"token":     bencode.String(token),
+			},
+		}, queryTimeout)
+		if err == nil {
+			announced++
+		}
+	}
+
+	if announced == 0 && len(closest) > 0 {
+		return fmt.Errorf("announce_peer: no nodes accepted (tried %d)", len(closest))
+	}
+	return nil
+}
+
+// sendGetPeers sends a get_peers query to a single node.
+func (d *DHT) sendGetPeers(n Node, infoHash [20]byte) (struct {
+	from  Node
+	nodes []Node
+	peers []string
+	token string
+}, error) {
+	type result = struct {
+		from  Node
+		nodes []Node
+		peers []string
+		token string
+	}
+
+	resp, err := d.Transport.Send(&n.Addr, Message{
+		Type:   "q",
+		Method: "get_peers",
+		Args: bencode.Dict{
+			"id":        bencode.String(d.ID[:]),
+			"info_hash": bencode.String(infoHash[:]),
+		},
+	}, queryTimeout)
+	if err != nil {
+		return result{}, err
+	}
+	if resp.Type == "e" {
+		return result{}, fmt.Errorf("get_peers error: %v", resp.Error)
+	}
+
+	r := result{from: n}
+
+	// Extract token.
+	if tok, ok := resp.Reply["token"].(bencode.String); ok {
+		r.token = string(tok)
+	}
+
+	// Peers (values) — list of compact 6-byte peer addresses.
+	if values, ok := resp.Reply["values"].(bencode.List); ok {
+		for _, v := range values {
+			if s, ok := v.(bencode.String); ok {
+				for _, p := range DecodeCompactPeers([]byte(s)) {
+					r.peers = append(r.peers, p)
+				}
+			}
+		}
+	}
+
+	// Closer nodes.
+	if nodesStr, ok := resp.Reply["nodes"].(bencode.String); ok {
+		r.nodes = DecodeCompactNodes([]byte(nodesStr))
+	}
+
+	return r, nil
+}
+
 // iterativeLookup is the core Kademlia iterative lookup algorithm.
-// If getPeers is true, it also collects peer addresses along the way.
+// Used by FindNode.
 func (d *DHT) iterativeLookup(target NodeID, getPeers bool) []Node {
 	// Seed with closest nodes from our routing table.
 	seeds := d.Table.Closest(target, alpha)
