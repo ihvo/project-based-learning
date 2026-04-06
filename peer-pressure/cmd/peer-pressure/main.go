@@ -171,30 +171,44 @@ func runDownload(args []string) {
 	fmt.Printf("\nDone! Saved to %s\n", outPath)
 }
 
-// announceAll queries every tracker in the torrent and merges peers.
+// announceAll queries every tracker in the torrent concurrently and merges peers.
 func announceAll(t *torrent.Torrent, port uint16) []string {
 	trackers := t.Trackers()
+
+	type result struct {
+		url   string
+		resp  *tracker.Response
+		err   error
+	}
+	ch := make(chan result, len(trackers))
+
+	for _, trackerURL := range trackers {
+		go func(url string) {
+			fmt.Printf("Announcing to %s...\n", url)
+			resp, err := tracker.Announce(url, tracker.AnnounceParams{
+				InfoHash: t.InfoHash,
+				PeerID:   peerID,
+				Port:     port,
+				Left:     int64(t.TotalLength()),
+				Event:    "started",
+				NumWant:  200,
+			})
+			ch <- result{url, resp, err}
+		}(trackerURL)
+	}
 
 	seen := make(map[string]bool)
 	var addrs []string
 
-	for _, trackerURL := range trackers {
-		fmt.Printf("Announcing to %s...\n", trackerURL)
-		resp, err := tracker.Announce(trackerURL, tracker.AnnounceParams{
-			InfoHash: t.InfoHash,
-			PeerID:   peerID,
-			Port:     port,
-			Left:     int64(t.TotalLength()),
-			Event:    "started",
-			NumWant:  200,
-		})
-		if err != nil {
-			fmt.Printf("  tracker error: %v\n", err)
+	for range len(trackers) {
+		r := <-ch
+		if r.err != nil {
+			fmt.Printf("  tracker error: %v\n", r.err)
 			continue
 		}
 		fmt.Printf("  got %d peers (seeders: %d, leechers: %d)\n",
-			len(resp.Peers), resp.Complete, resp.Incomplete)
-		for _, p := range resp.Peers {
+			len(r.resp.Peers), r.resp.Complete, r.resp.Incomplete)
+		for _, p := range r.resp.Peers {
 			addr := p.Addr()
 			if !seen[addr] {
 				seen[addr] = true

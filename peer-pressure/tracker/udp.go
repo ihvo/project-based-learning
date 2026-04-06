@@ -178,8 +178,8 @@ func udpRoundTrip(conn *net.UDPConn, req []byte, minResp int) ([]byte, error) {
 	buf := make([]byte, 4096) // plenty for any tracker response
 
 	for n := range maxRetries {
-		// BEP 15 timeout formula: 15 × 2^n seconds.
-		timeout := 15 * time.Second * (1 << n)
+		// Start at 2s, double each retry: 2s, 4s, 8s, 16s.
+		timeout := 2 * time.Second * (1 << n)
 		if timeout > maxTimeout {
 			timeout = maxTimeout
 		}
@@ -199,11 +199,18 @@ func udpRoundTrip(conn *net.UDPConn, req []byte, minResp int) ([]byte, error) {
 		}
 
 		if nRead < minResp {
+			// Check for error response first (action=3, at least 8 bytes).
+			if nRead >= 8 {
+				action := binary.BigEndian.Uint32(buf[0:4])
+				if action == 3 {
+					msg := string(buf[8:nRead])
+					return nil, fmt.Errorf("tracker error: %s", msg)
+				}
+			}
 			return nil, fmt.Errorf("response too short: got %d bytes, need >= %d", nRead, minResp)
 		}
 
-		// Check for error response (action=3). The tracker can return an error
-		// message instead of the expected response.
+		// Check for error response (action=3).
 		if nRead >= 8 {
 			action := binary.BigEndian.Uint32(buf[0:4])
 			if action == 3 {
