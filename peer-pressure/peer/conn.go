@@ -134,12 +134,12 @@ func (c *Conn) SupportsExtensions() bool {
 
 // ExchangeExtHandshake sends our extension handshake and reads the peer's.
 // Only call if SupportsExtensions() is true. Stores the result in PeerExtensions.
-func (c *Conn) ExchangeExtHandshake(exts map[string]int, metadataSize int) error {
+func (c *Conn) ExchangeExtHandshake(exts map[string]int, metadataSize int, clientVersion string) error {
 	// Write and read concurrently — net.Pipe (and similar unbuffered
 	// transports) deadlock if both sides flush before either reads.
 	writeErr := make(chan error, 1)
 	go func() {
-		err := c.WriteMessage(NewExtHandshake(exts, metadataSize))
+		err := c.WriteMessage(NewExtHandshake(exts, metadataSize, clientVersion))
 		if err == nil {
 			err = c.Flush()
 		}

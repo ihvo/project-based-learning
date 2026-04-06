@@ -2,13 +2,13 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
 	"flag"
 	"fmt"
 	"net"
 	"os"
 	"strings"
 
+	"github.com/ihvo/peer-pressure/client"
 	"github.com/ihvo/peer-pressure/dht"
 	"github.com/ihvo/peer-pressure/download"
 	"github.com/ihvo/peer-pressure/magnet"
@@ -17,15 +17,7 @@ import (
 	"github.com/ihvo/peer-pressure/tracker"
 )
 
-const version = "0.1.0"
-
-var peerID [20]byte
-
-func init() {
-	// -PP0001- prefix + 12 random bytes
-	copy(peerID[:], "-PP0001-")
-	rand.Read(peerID[8:])
-}
+var peerID = client.GeneratePeerID()
 
 func main() {
 	if len(os.Args) < 2 {
@@ -44,7 +36,7 @@ func main() {
 	case "download":
 		runDownload(args)
 	case "version", "--version", "-v":
-		fmt.Printf("peer-pressure %s\n", version)
+		fmt.Printf("peer-pressure %s\n", client.Version)
 	case "help", "--help", "-h":
 		printUsage()
 	default:
@@ -68,7 +60,7 @@ Commands:
   help       Show this help
 
 Run 'peer-pressure <command> -h' for command-specific help.
-`, version)
+`, client.Version)
 }
 
 // --- info ---
@@ -348,7 +340,7 @@ func fetchMetadataFromPeers(addrs []string, infoHash [20]byte) []byte {
 		}
 
 		err = conn.ExchangeExtHandshake(
-			map[string]int{"ut_metadata": 1}, 0)
+			map[string]int{"ut_metadata": 1}, 0, client.UserAgent())
 		if err != nil {
 			conn.Close()
 			continue

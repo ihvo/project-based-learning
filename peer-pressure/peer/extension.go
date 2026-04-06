@@ -30,7 +30,7 @@ type ExtHandshake struct {
 
 // NewExtHandshake creates an extension handshake message (sub-ID 0)
 // advertising our supported extensions.
-func NewExtHandshake(exts map[string]int, metadataSize int) *Message {
+func NewExtHandshake(exts map[string]int, metadataSize int, clientVersion string) *Message {
 	m := bencode.Dict{}
 	for name, id := range exts {
 		m[name] = bencode.Int(id)
@@ -38,7 +38,7 @@ func NewExtHandshake(exts map[string]int, metadataSize int) *Message {
 
 	d := bencode.Dict{
 		"m": m,
-		"v": bencode.String("Peer Pressure 0.1"),
+		"v": bencode.String(clientVersion),
 	}
 	if metadataSize > 0 {
 		d["metadata_size"] = bencode.Int(metadataSize)

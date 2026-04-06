@@ -124,11 +124,11 @@ func TestFetchMetadataSmall(t *testing.T) {
 	extDone := make(chan error, 2)
 	go func() {
 		extDone <- connA.ExchangeExtHandshake(
-			map[string]int{"ut_metadata": 1}, 0)
+			map[string]int{"ut_metadata": 1}, 0, "Test")
 	}()
 	go func() {
 		extDone <- connB.ExchangeExtHandshake(
-			map[string]int{"ut_metadata": 2}, len(metadata))
+			map[string]int{"ut_metadata": 2}, len(metadata), "Test")
 	}()
 	for range 2 {
 		if err := <-extDone; err != nil {
@@ -167,11 +167,11 @@ func TestFetchMetadataMultiPiece(t *testing.T) {
 	extDone := make(chan error, 2)
 	go func() {
 		extDone <- connA.ExchangeExtHandshake(
-			map[string]int{"ut_metadata": 1}, 0)
+			map[string]int{"ut_metadata": 1}, 0, "Test")
 	}()
 	go func() {
 		extDone <- connB.ExchangeExtHandshake(
-			map[string]int{"ut_metadata": 2}, len(metadata))
+			map[string]int{"ut_metadata": 2}, len(metadata), "Test")
 	}()
 	for range 2 {
 		if err := <-extDone; err != nil {
@@ -208,11 +208,11 @@ func TestFetchMetadataHashMismatch(t *testing.T) {
 	extDone := make(chan error, 2)
 	go func() {
 		extDone <- connA.ExchangeExtHandshake(
-			map[string]int{"ut_metadata": 1}, 0)
+			map[string]int{"ut_metadata": 1}, 0, "Test")
 	}()
 	go func() {
 		extDone <- connB.ExchangeExtHandshake(
-			map[string]int{"ut_metadata": 2}, len(metadata))
+			map[string]int{"ut_metadata": 2}, len(metadata), "Test")
 	}()
 	for range 2 {
 		if err := <-extDone; err != nil {
@@ -255,11 +255,11 @@ func TestFetchMetadataNoUtMetadata(t *testing.T) {
 	extDone := make(chan error, 2)
 	go func() {
 		extDone <- connA.ExchangeExtHandshake(
-			map[string]int{"ut_metadata": 1}, 0)
+			map[string]int{"ut_metadata": 1}, 0, "Test")
 	}()
 	go func() {
 		extDone <- connB.ExchangeExtHandshake(
-			map[string]int{}, 0) // no ut_metadata
+			map[string]int{}, 0, "Test") // no ut_metadata
 	}()
 	for range 2 {
 		if err := <-extDone; err != nil {

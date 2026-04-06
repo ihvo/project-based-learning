@@ -10,7 +10,7 @@ func TestExtHandshakeRoundTrip(t *testing.T) {
 		"ut_metadata": 1,
 		"ut_pex":      2,
 	}
-	msg := NewExtHandshake(exts, 31415)
+	msg := NewExtHandshake(exts, 31415, "Test Client 1.0")
 
 	if msg.ID != MsgExtended {
 		t.Fatalf("expected MsgExtended (%d), got %d", MsgExtended, msg.ID)
@@ -33,13 +33,13 @@ func TestExtHandshakeRoundTrip(t *testing.T) {
 	if hs.MetadataSize != 31415 {
 		t.Errorf("metadata_size: got %d, want 31415", hs.MetadataSize)
 	}
-	if hs.V != "Peer Pressure 0.1" {
-		t.Errorf("v: got %q, want %q", hs.V, "Peer Pressure 0.1")
+	if hs.V != "Test Client 1.0" {
+		t.Errorf("v: got %q, want %q", hs.V, "Test Client 1.0")
 	}
 }
 
 func TestExtHandshakeNoMetadataSize(t *testing.T) {
-	msg := NewExtHandshake(map[string]int{"ut_pex": 3}, 0)
+	msg := NewExtHandshake(map[string]int{"ut_pex": 3}, 0, "Test")
 	hs, err := ParseExtHandshake(msg.Payload)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
@@ -53,7 +53,7 @@ func TestExtHandshakeNoMetadataSize(t *testing.T) {
 }
 
 func TestExtHandshakeEmptyExtensions(t *testing.T) {
-	msg := NewExtHandshake(map[string]int{}, 0)
+	msg := NewExtHandshake(map[string]int{}, 0, "Test")
 	hs, err := ParseExtHandshake(msg.Payload)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
@@ -172,11 +172,11 @@ func TestExchangeExtHandshake(t *testing.T) {
 		extErrCh := make(chan error, 2)
 		go func() {
 			extErrCh <- connA.ExchangeExtHandshake(
-				map[string]int{"ut_metadata": 1}, 9999)
+				map[string]int{"ut_metadata": 1}, 9999, "Test")
 		}()
 		go func() {
 			extErrCh <- connB.ExchangeExtHandshake(
-				map[string]int{"ut_pex": 2}, 0)
+				map[string]int{"ut_pex": 2}, 0, "Test")
 		}()
 
 		for range 2 {
