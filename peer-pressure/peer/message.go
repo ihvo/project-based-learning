@@ -41,6 +41,11 @@ const (
 	// BEP 10 — Extension Protocol. Extended messages carry a sub-ID
 	// in the first payload byte. Sub-ID 0 is the extension handshake.
 	MsgExtended uint8 = 20
+
+	// BEP 52 — BitTorrent v2 hash tree messages.
+	MsgHashRequest uint8 = 21
+	MsgHashes      uint8 = 22
+	MsgHashReject  uint8 = 23
 )
 
 // --- Handshake ---
