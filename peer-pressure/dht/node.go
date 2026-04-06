@@ -631,3 +631,79 @@ func DecodeCompactPeers6(data []byte) []string {
 	}
 	return addrs
 }
+
+// SampleInfohashesResult holds the response to a BEP 51 sample_infohashes query.
+type SampleInfohashesResult struct {
+	Samples  [][20]byte // sampled infohash keys
+	Num      int        // total number of infohashes in storage
+	Interval int        // seconds until a new sample is available
+	Nodes    []Node     // close nodes for iterative traversal
+}
+
+// SampleInfohashes sends a BEP 51 sample_infohashes query to the given node.
+func (d *DHT) SampleInfohashes(addr *net.UDPAddr, target NodeID) (*SampleInfohashesResult, error) {
+	resp, err := d.Transport.Send(addr, d.newQuery("sample_infohashes", bencode.Dict{
+		"id":     bencode.String(d.ID[:]),
+		"target": bencode.String(target[:]),
+	}), queryTimeout)
+	if err != nil {
+		return nil, err
+	}
+	if resp.Type == "e" {
+		return nil, fmt.Errorf("sample_infohashes error: %v", resp.Error)
+	}
+
+	result := &SampleInfohashesResult{}
+
+	// Parse samples (concatenated 20-byte hashes).
+	if samplesRaw, ok := resp.Reply["samples"].(bencode.String); ok {
+		data := []byte(samplesRaw)
+		for len(data) >= 20 {
+			var h [20]byte
+			copy(h[:], data[:20])
+			result.Samples = append(result.Samples, h)
+			data = data[20:]
+		}
+	}
+
+	// Parse num (total count).
+	if numVal, ok := resp.Reply["num"].(bencode.Int); ok {
+		result.Num = int(numVal)
+	}
+
+	// Parse interval.
+	if ivVal, ok := resp.Reply["interval"].(bencode.Int); ok {
+		result.Interval = int(ivVal)
+	}
+
+	// Parse nodes for iterative traversal.
+	if nodesRaw, ok := resp.Reply["nodes"].(bencode.String); ok {
+		result.Nodes = DecodeCompactNodes([]byte(nodesRaw))
+	}
+	if nodes6Raw, ok := resp.Reply["nodes6"].(bencode.String); ok {
+		result.Nodes = append(result.Nodes, DecodeCompactNodes6([]byte(nodes6Raw))...)
+	}
+
+	return result, nil
+}
+
+// DecodeSamples parses concatenated 20-byte infohashes from a BEP 51 samples field.
+func DecodeSamples(data []byte) [][20]byte {
+	var hashes [][20]byte
+	for len(data) >= 20 {
+		var h [20]byte
+		copy(h[:], data[:20])
+		hashes = append(hashes, h)
+		data = data[20:]
+	}
+	return hashes
+}
+
+// EncodeSamples concatenates infohashes into a BEP 51 samples field.
+func EncodeSamples(hashes [][20]byte) []byte {
+	buf := make([]byte, 0, len(hashes)*20)
+	for _, h := range hashes {
+		buf = append(buf, h[:]...)
+	}
+	return buf
+}

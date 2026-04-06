@@ -648,3 +648,51 @@ func TestDecodeCompactPeers6Short(t *testing.T) {
 		t.Errorf("got %d peers from 17 bytes", len(addrs))
 	}
 }
+
+// --- BEP 51: DHT Infohash Indexing ---
+
+func TestEncodeSamples(t *testing.T) {
+	hashes := [][20]byte{
+		{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14},
+		{0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e, 0x2f, 0x30, 0x31, 0x32, 0x33, 0x34},
+	}
+	encoded := EncodeSamples(hashes)
+	if len(encoded) != 40 {
+		t.Fatalf("encoded len = %d, want 40", len(encoded))
+	}
+	decoded := DecodeSamples(encoded)
+	if len(decoded) != 2 {
+		t.Fatalf("decoded len = %d, want 2", len(decoded))
+	}
+	if decoded[0] != hashes[0] || decoded[1] != hashes[1] {
+		t.Error("round-trip mismatch")
+	}
+}
+
+func TestDecodeSamplesEmpty(t *testing.T) {
+	hashes := DecodeSamples(nil)
+	if len(hashes) != 0 {
+		t.Errorf("got %d hashes from nil", len(hashes))
+	}
+}
+
+func TestDecodeSamplesShort(t *testing.T) {
+	// 19 bytes — not enough for a full hash.
+	hashes := DecodeSamples(make([]byte, 19))
+	if len(hashes) != 0 {
+		t.Errorf("got %d hashes from 19 bytes", len(hashes))
+	}
+}
+
+func TestDecodeSamplesPartial(t *testing.T) {
+	// 30 bytes — one full hash + 10 leftover bytes.
+	data := make([]byte, 30)
+	data[0] = 0xAA
+	hashes := DecodeSamples(data)
+	if len(hashes) != 1 {
+		t.Fatalf("got %d hashes, want 1", len(hashes))
+	}
+	if hashes[0][0] != 0xAA {
+		t.Error("first byte mismatch")
+	}
+}
