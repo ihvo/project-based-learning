@@ -22,10 +22,10 @@ type Conn struct {
 }
 
 // Dial connects to a peer, performs the handshake, and returns a Conn.
-// Uses a 5-second connection timeout. Returns an error if the peer's
+// Uses a 2-second connection timeout. Returns an error if the peer's
 // info_hash doesn't match ours.
 func Dial(addr string, infoHash, peerID [20]byte) (*Conn, error) {
-	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("connect to peer: %w", err)
 	}
@@ -80,8 +80,8 @@ func doHandshake(conn net.Conn, infoHash, peerID [20]byte) (*Conn, error) {
 
 	return &Conn{
 		conn:     conn,
-		reader:   bufio.NewReader(conn),
-		writer:   bufio.NewWriterSize(conn, 64*1024), // 64 KiB write buffer
+		reader:   bufio.NewReaderSize(conn, 128*1024), // 128 KiB read buffer
+		writer:   bufio.NewWriterSize(conn, 128*1024), // 128 KiB write buffer
 		PeerID:   peerHS.PeerID,
 		InfoHash: peerHS.InfoHash,
 	}, nil

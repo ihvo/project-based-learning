@@ -123,6 +123,9 @@ func (p *Progress) BlockReceived(addr string, blockBytes int) {
 func (p *Progress) PieceDone(index int, addr string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.pieces[index] == StateDone {
+		return // already counted
+	}
 	p.pieces[index] = StateDone
 	p.piecesDone++
 	if ps, ok := p.peers[addr]; ok {
@@ -188,6 +191,9 @@ func (p *Progress) Render(width int) string {
 	if p.numPieces > 0 {
 		filled = p.piecesDone * barWidth / p.numPieces
 	}
+	if filled > barWidth {
+		filled = barWidth
+	}
 	active := 0
 	for _, s := range p.pieces {
 		if s == StateActive {
@@ -201,11 +207,18 @@ func (p *Progress) Render(width int) string {
 	if activeBar+filled > barWidth {
 		activeBar = barWidth - filled
 	}
+	if activeBar < 0 {
+		activeBar = 0
+	}
+	emptyBar := barWidth - filled - activeBar
+	if emptyBar < 0 {
+		emptyBar = 0
+	}
 
 	fmt.Fprintf(&b, "  Progress \033[32m%s\033[33m%s\033[90m%s\033[0m %d%%  %d/%d pcs\n",
 		strings.Repeat("█", filled),
 		strings.Repeat("▓", activeBar),
-		strings.Repeat("░", barWidth-filled-activeBar),
+		strings.Repeat("░", emptyBar),
 		pct,
 		p.piecesDone,
 		p.numPieces,
@@ -314,6 +327,9 @@ func (p *Progress) Render(width int) string {
 				barFill = int(ps.Speed / maxSpeed * float64(barCap))
 				if barFill < 1 {
 					barFill = 1
+				}
+				if barFill > barCap {
+					barFill = barCap
 				}
 			}
 			barEmpty := barCap - barFill

@@ -31,6 +31,7 @@ type peerPool struct {
 	mu      sync.Mutex
 	untried []string                  // peers we haven't connected to yet
 	active  map[string]*activeWorker  // addr → running worker
+	strikes map[string]int            // how many times a peer has been tried
 
 	// Concurrency
 	wg     sync.WaitGroup       // tracks all active worker goroutines
@@ -71,7 +72,7 @@ func newPeerPool(cfg Config, picker *Picker, results chan<- pieceResult, prog *P
 
 	pipelineDepth := cfg.PipelineDepth
 	if pipelineDepth <= 0 {
-		pipelineDepth = 5
+		pipelineDepth = 20
 	}
 
 	// Reserve 10% of slots for rotation, minimum 1.
@@ -97,10 +98,11 @@ func newPeerPool(cfg Config, picker *Picker, results chan<- pieceResult, prog *P
 		pipelineDepth: pipelineDepth,
 		maxSlots:      maxSlots,
 		rotateCount:   rotateCount,
-		evalInterval:  10 * time.Second,
-		gracePeriod:   15 * time.Second,
+		evalInterval:  5 * time.Second,
+		gracePeriod:   5 * time.Second,
 		untried:       untried,
 		active:        make(map[string]*activeWorker, maxSlots),
+		strikes:       make(map[string]int),
 		doneCh:        make(chan string, maxSlots),
 	}
 }
@@ -165,7 +167,7 @@ func (p *peerPool) startWorker(ctx context.Context, addr string) {
 // runWorker is the worker entry point. It's the same as the old worker()
 // function but reports bytes to the activeWorker's atomic counter.
 func (p *peerPool) runWorker(ctx context.Context, aw *activeWorker) {
-	const maxRetries = 5
+	const maxRetries = 3
 	retries := 0
 
 	for retries < maxRetries {
@@ -178,6 +180,10 @@ func (p *peerPool) runWorker(ctx context.Context, aw *activeWorker) {
 		downloaded := p.runWorkerSession(ctx, aw)
 		if downloaded > 0 {
 			retries = 0
+			// Reset strikes for productive peers so they get unlimited recycling.
+			p.mu.Lock()
+			delete(p.strikes, aw.addr)
+			p.mu.Unlock()
 		} else {
 			retries++
 		}
@@ -225,9 +231,20 @@ func (p *peerPool) runWorkerSession(ctx context.Context, aw *activeWorker) int {
 }
 
 // handleWorkerExit cleans up after a worker exits and backfills the slot.
+// Peers are recycled (up to 3 strikes) so we don't permanently lose slots.
 func (p *peerPool) handleWorkerExit(ctx context.Context, addr string) {
 	p.mu.Lock()
+	aw := p.active[addr]
 	delete(p.active, addr)
+
+	// Recycle peer if it hasn't struck out (max 3 attempts).
+	if aw != nil {
+		p.strikes[addr]++
+		if p.strikes[addr] < 3 {
+			p.untried = append(p.untried, addr)
+		}
+	}
+
 	slotsFree := p.maxSlots - len(p.active)
 	p.mu.Unlock()
 
@@ -243,59 +260,73 @@ func (p *peerPool) handleWorkerExit(ctx context.Context, addr string) {
 
 // evaluate ranks active workers by speed, cancels the slowest rotateCount,
 // and starts replacements from the untried pool.
+// Dead workers (0 bytes after grace period) are evicted immediately without
+// counting toward rotateCount — that budget is reserved for tuning among
+// productive peers.
 func (p *peerPool) evaluate(ctx context.Context) {
 	p.mu.Lock()
 
 	now := time.Now()
 
-	// Collect speeds for workers past the grace period.
 	type ranked struct {
 		addr  string
 		speed float64
 	}
-	var eligible []ranked
+	var dead []string   // past grace, 0 bytes ever — evict unconditionally
+	var live []ranked   // past grace, has downloaded something — rotate slowest
+
 	for _, aw := range p.active {
 		spd := aw.speed(now)
-		if now.Sub(aw.started) < p.gracePeriod {
-			aw.snapshot(now) // update baseline but don't evaluate yet
-		} else {
-			eligible = append(eligible, ranked{aw.addr, spd})
-			aw.snapshot(now)
-		}
+
 		// Push every worker's speed to the progress display.
 		if p.prog != nil {
 			p.prog.UpdatePeerSpeed(aw.addr, spd)
 		}
+
+		if now.Sub(aw.started) < p.gracePeriod {
+			aw.snapshot(now)
+			continue
+		}
+
+		aw.snapshot(now)
+
+		if aw.bytes.Load() == 0 {
+			dead = append(dead, aw.addr)
+		} else {
+			live = append(live, ranked{aw.addr, spd})
+		}
 	}
 
-	// Need untried peers to rotate in — no point evicting without replacements.
-	available := len(p.untried)
-	if available == 0 || len(eligible) == 0 {
-		p.mu.Unlock()
-		return
-	}
-
-	// Sort slowest first.
-	sort.Slice(eligible, func(i, j int) bool {
-		return eligible[i].speed < eligible[j].speed
-	})
-
-	// How many to rotate: min(rotateCount, available untried, eligible workers).
-	toRotate := p.rotateCount
-	if toRotate > available {
-		toRotate = available
-	}
-	if toRotate > len(eligible) {
-		toRotate = len(eligible)
-	}
-
-	// Cancel the slowest workers.
+	// Cancel all dead workers immediately — they hold slots without contributing.
 	var toCancel []string
-	for i := range toRotate {
-		addr := eligible[i].addr
+	for _, addr := range dead {
 		if aw, ok := p.active[addr]; ok {
 			aw.cancel()
 			toCancel = append(toCancel, addr)
+		}
+	}
+
+	// From live workers, rotate the slowest rotateCount (speed optimization).
+	available := len(p.untried)
+	if available > len(toCancel) && len(live) > 0 {
+		sort.Slice(live, func(i, j int) bool {
+			return live[i].speed < live[j].speed
+		})
+
+		budget := p.rotateCount
+		remaining := available - len(toCancel)
+		if budget > remaining {
+			budget = remaining
+		}
+		if budget > len(live) {
+			budget = len(live)
+		}
+		for i := range budget {
+			addr := live[i].addr
+			if aw, ok := p.active[addr]; ok {
+				aw.cancel()
+				toCancel = append(toCancel, addr)
+			}
 		}
 	}
 
