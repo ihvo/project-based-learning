@@ -36,12 +36,13 @@ func RandomNodeID() NodeID {
 //
 //	{"t": "<txn_id>", "y": "q|r|e", "q": "<method>", "a|r|e": {...}}
 type Message struct {
-	TxnID  string      // "t" — transaction ID matching request to response
-	Type   string      // "y" — "q" (query), "r" (response), "e" (error)
-	Method string      // "q" — query method name (only for queries)
-	Args   bencode.Dict // "a" — query arguments (only for queries)
-	Reply  bencode.Dict // "r" — response body (only for responses)
-	Error  []any       // "e" — [code, message] (only for errors)
+	TxnID    string       // "t" — transaction ID matching request to response
+	Type     string       // "y" — "q" (query), "r" (response), "e" (error)
+	Method   string       // "q" — query method name (only for queries)
+	Args     bencode.Dict // "a" — query arguments (only for queries)
+	Reply    bencode.Dict // "r" — response body (only for responses)
+	Error    []any        // "e" — [code, message] (only for errors)
+	ReadOnly bool         // BEP 43: ro=1 in outgoing queries
 }
 
 // EncodeMessage bencodes a KRPC message for transmission.
@@ -54,6 +55,9 @@ func EncodeMessage(msg Message) []byte {
 	case "q":
 		d["q"] = bencode.String(msg.Method)
 		d["a"] = msg.Args
+		if msg.ReadOnly {
+			d["ro"] = bencode.Int(1)
+		}
 	case "r":
 		d["r"] = msg.Reply
 	case "e":
@@ -109,6 +113,10 @@ func DecodeMessage(data []byte) (Message, error) {
 		}
 		if a, ok := d["a"].(bencode.Dict); ok {
 			msg.Args = a
+		}
+		// BEP 43: read-only flag
+		if ro, ok := d["ro"].(bencode.Int); ok && ro == 1 {
+			msg.ReadOnly = true
 		}
 	case "r":
 		if r, ok := d["r"].(bencode.Dict); ok {

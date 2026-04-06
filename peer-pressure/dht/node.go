@@ -29,6 +29,7 @@ type DHT struct {
 	ID        NodeID
 	Table     *RoutingTable
 	Transport *Transport
+	ReadOnly  bool              // BEP 43: set ro=1 in all outgoing queries
 	tokens    map[NodeID]string // cached tokens from get_peers responses
 	tokensMu  sync.Mutex
 }
@@ -44,13 +45,21 @@ func New(conn *net.UDPConn) *DHT {
 	}
 }
 
+// newQuery builds a KRPC query message, setting ro=1 if we're read-only (BEP 43).
+func (d *DHT) newQuery(method string, args bencode.Dict) Message {
+	return Message{
+		Type:     "q",
+		Method:   method,
+		Args:     args,
+		ReadOnly: d.ReadOnly,
+	}
+}
+
 // Ping sends a ping query and returns the remote node's ID.
 func (d *DHT) Ping(addr *net.UDPAddr) (NodeID, error) {
-	resp, err := d.Transport.Send(addr, Message{
-		Type:   "q",
-		Method: "ping",
-		Args:   bencode.Dict{"id": bencode.String(d.ID[:])},
-	}, queryTimeout)
+	resp, err := d.Transport.Send(addr, d.newQuery("ping", bencode.Dict{
+		"id": bencode.String(d.ID[:]),
+	}), queryTimeout)
 	if err != nil {
 		return NodeID{}, err
 	}
@@ -189,16 +198,12 @@ func (d *DHT) AnnouncePeer(infoHash [20]byte, port int) error {
 			continue
 		}
 
-		_, err := d.Transport.Send(&n.Addr, Message{
-			Type:   "q",
-			Method: "announce_peer",
-			Args: bencode.Dict{
-				"id":        bencode.String(d.ID[:]),
-				"info_hash": bencode.String(infoHash[:]),
-				"port":      bencode.Int(port),
-				"token":     bencode.String(token),
-			},
-		}, queryTimeout)
+		_, err := d.Transport.Send(&n.Addr, d.newQuery("announce_peer", bencode.Dict{
+			"id":        bencode.String(d.ID[:]),
+			"info_hash": bencode.String(infoHash[:]),
+			"port":      bencode.Int(port),
+			"token":     bencode.String(token),
+		}), queryTimeout)
 		if err == nil {
 			announced++
 		}
@@ -224,14 +229,10 @@ func (d *DHT) sendGetPeers(n Node, infoHash [20]byte) (struct {
 		token string
 	}
 
-	resp, err := d.Transport.Send(&n.Addr, Message{
-		Type:   "q",
-		Method: "get_peers",
-		Args: bencode.Dict{
-			"id":        bencode.String(d.ID[:]),
-			"info_hash": bencode.String(infoHash[:]),
-		},
-	}, queryTimeout)
+	resp, err := d.Transport.Send(&n.Addr, d.newQuery("get_peers", bencode.Dict{
+		"id":        bencode.String(d.ID[:]),
+		"info_hash": bencode.String(infoHash[:]),
+	}), queryTimeout)
 	if err != nil {
 		return result{}, err
 	}
@@ -355,14 +356,10 @@ func (d *DHT) iterativeLookup(target NodeID, getPeers bool) []Node {
 
 // sendFindNode sends a find_node query to a single node.
 func (d *DHT) sendFindNode(n Node, target NodeID) ([]Node, error) {
-	resp, err := d.Transport.Send(&n.Addr, Message{
-		Type:   "q",
-		Method: "find_node",
-		Args: bencode.Dict{
-			"id":     bencode.String(d.ID[:]),
-			"target": bencode.String(target[:]),
-		},
-	}, queryTimeout)
+	resp, err := d.Transport.Send(&n.Addr, d.newQuery("find_node", bencode.Dict{
+		"id":     bencode.String(d.ID[:]),
+		"target": bencode.String(target[:]),
+	}), queryTimeout)
 	if err != nil {
 		return nil, err
 	}

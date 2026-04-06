@@ -241,3 +241,133 @@ func TestRandomNodeID(t *testing.T) {
 		t.Error("random ID should not be all zeros")
 	}
 }
+
+// --- BEP 43: Read-only DHT tests ---
+
+func TestEncodeQueryWithRO(t *testing.T) {
+	msg := Message{
+		TxnID:    "aa",
+		Type:     "q",
+		Method:   "ping",
+		Args:     bencode.Dict{"id": bencode.String("12345678901234567890")},
+		ReadOnly: true,
+	}
+	data := EncodeMessage(msg)
+	decoded, err := DecodeMessage(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !decoded.ReadOnly {
+		t.Error("expected ReadOnly=true after round-trip")
+	}
+}
+
+func TestEncodeQueryWithoutRO(t *testing.T) {
+	msg := Message{
+		TxnID:  "aa",
+		Type:   "q",
+		Method: "ping",
+		Args:   bencode.Dict{"id": bencode.String("12345678901234567890")},
+	}
+	data := EncodeMessage(msg)
+	// Verify no "ro" key in the bencoded output
+	val, _ := bencode.Decode(data)
+	d := val.(bencode.Dict)
+	if _, ok := d["ro"]; ok {
+		t.Error("should not contain 'ro' key when ReadOnly=false")
+	}
+}
+
+func TestEncodeResponseIgnoresRO(t *testing.T) {
+	msg := Message{
+		TxnID:    "bb",
+		Type:     "r",
+		Reply:    bencode.Dict{"id": bencode.String("12345678901234567890")},
+		ReadOnly: true,
+	}
+	data := EncodeMessage(msg)
+	val, _ := bencode.Decode(data)
+	d := val.(bencode.Dict)
+	if _, ok := d["ro"]; ok {
+		t.Error("response should not contain 'ro' key")
+	}
+}
+
+func TestDecodeQueryWithRO(t *testing.T) {
+	d := bencode.Dict{
+		"t":  bencode.String("aa"),
+		"y":  bencode.String("q"),
+		"q":  bencode.String("ping"),
+		"a":  bencode.Dict{"id": bencode.String("12345678901234567890")},
+		"ro": bencode.Int(1),
+	}
+	data := bencode.Encode(d)
+	msg, err := DecodeMessage(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !msg.ReadOnly {
+		t.Error("expected ReadOnly=true")
+	}
+}
+
+func TestDecodeQueryWithROZero(t *testing.T) {
+	d := bencode.Dict{
+		"t":  bencode.String("aa"),
+		"y":  bencode.String("q"),
+		"q":  bencode.String("ping"),
+		"a":  bencode.Dict{"id": bencode.String("12345678901234567890")},
+		"ro": bencode.Int(0),
+	}
+	data := bencode.Encode(d)
+	msg, err := DecodeMessage(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg.ReadOnly {
+		t.Error("expected ReadOnly=false for ro=0")
+	}
+}
+
+func TestDecodeQueryWithoutRO(t *testing.T) {
+	d := bencode.Dict{
+		"t": bencode.String("aa"),
+		"y": bencode.String("q"),
+		"q": bencode.String("ping"),
+		"a": bencode.Dict{"id": bencode.String("12345678901234567890")},
+	}
+	data := bencode.Encode(d)
+	msg, err := DecodeMessage(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg.ReadOnly {
+		t.Error("expected ReadOnly=false when absent")
+	}
+}
+
+func TestNewQueryReadOnly(t *testing.T) {
+	conn, _ := net.ListenPacket("udp4", "127.0.0.1:0")
+	defer conn.Close()
+	d := New(conn.(*net.UDPConn))
+	d.ReadOnly = true
+
+	msg := d.newQuery("ping", bencode.Dict{"id": bencode.String(d.ID[:])})
+	if msg.Type != "q" {
+		t.Errorf("Type = %q, want 'q'", msg.Type)
+	}
+	if !msg.ReadOnly {
+		t.Error("expected ReadOnly=true")
+	}
+}
+
+func TestNewQueryRegular(t *testing.T) {
+	conn, _ := net.ListenPacket("udp4", "127.0.0.1:0")
+	defer conn.Close()
+	d := New(conn.(*net.UDPConn))
+
+	msg := d.newQuery("find_node", bencode.Dict{"id": bencode.String(d.ID[:])})
+	if msg.ReadOnly {
+		t.Error("expected ReadOnly=false for regular node")
+	}
+}
